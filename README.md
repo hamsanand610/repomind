@@ -4,7 +4,7 @@ RepoMind is a read-only assistant that answers questions about a software projec
 
 It never modifies, commits to or executes the repositories it reads.
 
-**Status:** M0 (foundation). The API skeleton, security boundaries, tests and design tokens are in place; repository ingestion and chat come in later milestones.
+**Status:** deployed MVP. Public GitHub repositories are indexed at a pinned commit, with keyword and semantic search, grounded Q&A with server-validated citations, re-index and delete. Evaluation: [docs/eval-results.md](docs/eval-results.md).
 
 ## Stack
 
@@ -27,6 +27,8 @@ See [ADR 0001](docs/adr/0001-architecture-baseline.md) for the decisions and [do
 | `npm run bench:e1` | Local ingestion benchmark (add `-- --quick` for a smoke run); not Worker CPU time |
 | `npm run bench:storage` | Local SQLite/FTS5 storage-overhead experiment (in memory) |
 | `npm run bench:verify` | Checks chunking/redaction invariants over local public code and the fixture |
+| `npm run eval:server` / `npm run eval` | Local evaluation of search, answers, abstention, prompt injection and deletion (real Workers AI, separate Vectorize index); see [docs/eval-results.md](docs/eval-results.md) |
+| `npm run eval:keyword` | Keyword-search evaluation on pinned public repositories, no AI quota |
 | `npm run deploy` | Build and deploy. Requires Cloudflare login; deploy only when authorized. |
 
 ## Layout
