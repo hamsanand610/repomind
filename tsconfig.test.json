@@ -3,5 +3,5 @@
   "compilerOptions": {
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo"
   },
-  "include": ["tests", "bench", "eval/run.ts", "eval/dataset.ts"]
+  "include": ["tests", "bench", "eval/run.ts", "eval/dataset.ts", "eval/keyword.ts"]
 }

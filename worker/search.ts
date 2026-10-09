@@ -1,3 +1,5 @@
+import { priorityTier } from "../shared/ingest/admission.ts";
+import { identifierWords } from "../shared/ingest/identifiers.ts";
 import type { Database } from "./platform.ts";
 import { HttpError } from "./http.ts";
 
@@ -23,13 +25,16 @@ const STOPWORDS = new Set(
  * terms. "any": any term may match (question retrieval), stopwords removed.
  */
 export function ftsQuery(input: string, mode: "all" | "any"): string | null {
-  const words = input.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [];
-  const terms = [...new Set(words)]
-    .filter((word) => word.length >= 2 && (mode === "all" || !STOPWORDS.has(word)))
-    .slice(0, 16);
+  const terms = queryTerms(input, mode);
   if (terms.length === 0) return null;
   const quoted = terms.map((term) => `"${term.replaceAll('"', '""')}"${mode === "all" && term.length >= 3 ? "*" : ""}`);
   return quoted.join(mode === "all" ? " " : " OR ");
+}
+
+/** Normalised search terms; the same tokens ftsQuery quotes. */
+export function queryTerms(input: string, mode: "all" | "any"): string[] {
+  const words = input.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [];
+  return [...new Set(words)].filter((word) => word.length >= 2 && (mode === "all" || !STOPWORDS.has(word))).slice(0, 16);
 }
 
 export interface ChunkHit {
@@ -41,21 +46,64 @@ export interface ChunkHit {
   snippet: string;
 }
 
-export async function searchChunks(db: Database, versionId: string, query: string, limit: number): Promise<ChunkHit[]> {
+/** BM25 picks candidates; rerankHits then orders them for code search. */
+const CANDIDATES = 90;
+
+export async function searchChunks(db: Database, versionId: string, input: string, mode: "all" | "any", limit: number): Promise<ChunkHit[]> {
+  const query = ftsQuery(input, mode);
+  if (!query) return [];
   const { results } = await db
     .prepare(
       `SELECT c.id AS chunkId, c.ordinal AS ordinal, f.path AS path, c.start_line AS startLine, c.end_line AS endLine,
-              snippet(chunks_fts, 0, char(1), char(2), '…', 24) AS snippet
+              snippet(chunks_fts, 0, char(1), char(2), '…', 24) AS snippet, c.text AS text,
+              bm25(chunks_fts, 1.0, 0.6) AS score
        FROM chunks_fts
        JOIN chunks c ON c.rowid = chunks_fts.rowid
        JOIN files f ON f.version_id = c.version_id AND f.ordinal = c.ordinal
        WHERE chunks_fts MATCH ? AND c.version_id = ?
-       ORDER BY bm25(chunks_fts, 1.0, 0.6)
+       ORDER BY score
        LIMIT ?`,
     )
-    .bind(query, versionId, limit)
-    .all<ChunkHit>();
-  return results;
+    .bind(query, versionId, Math.max(limit, CANDIDATES))
+    .all<ChunkHit & { text: string; score: number }>();
+  return rerankHits(results, queryTerms(input, mode))
+    .slice(0, limit)
+    .map((hit) => ({ chunkId: hit.chunkId, ordinal: hit.ordinal, path: hit.path, startLine: hit.startLine, endLine: hit.endLine, snippet: hit.snippet }));
+}
+
+const DEFINITION = /\b(?:class|function|def|interface|type|enum|struct|trait|const|let|var|fn|func)\s+([A-Za-z_$][\w$]*)/g;
+
+/**
+ * Code-search ordering on top of BM25 (negative; lower is better): a chunk
+ * that defines the searched identifier ranks first, file names containing a
+ * term rank higher, and tests, which repeat terms, rank a little lower.
+ */
+export function rerankHits<T extends { path: string; text: string; score: number }>(hits: T[], terms: string[]): T[] {
+  const wanted = terms.filter((term) => term.length >= 3);
+  return hits
+    .map((hit, index) => {
+      let multiplier = 1;
+      if (priorityTier(hit.path) === 2) multiplier *= 0.6;
+      const path = hit.path.toLowerCase();
+      if (wanted.some((term) => path.includes(term))) multiplier *= 1.5;
+      if (definesTerms(hit.text, wanted)) multiplier *= 2;
+      return { hit, adjusted: hit.score * multiplier, index };
+    })
+    .sort((a, b) => a.adjusted - b.adjusted || a.index - b.index)
+    .map((entry) => entry.hit);
+}
+
+/** True if the text defines an identifier equal to the single term, or whose words include every term. */
+export function definesTerms(text: string, terms: string[]): boolean {
+  if (terms.length === 0) return false;
+  for (const match of text.matchAll(DEFINITION)) {
+    const name = match[1].toLowerCase();
+    if (terms.length === 1 && name === terms[0]) return true;
+    const words = new Set(identifierWords(match[1]).split(" "));
+    words.add(name);
+    if (terms.every((term) => words.has(term))) return true;
+  }
+  return false;
 }
 
 export interface PathHit {

@@ -37,7 +37,7 @@ import {
 import { dayBucket, enforceLimit, minuteBucket, quarterHourBucket } from "./quota.ts";
 import type { RequestContext, Route } from "./router.ts";
 import { commitUrl } from "./ask.ts";
-import { ftsQuery, listFiles, readFile, searchChunks, searchPaths } from "./search.ts";
+import { listFiles, readFile, searchChunks, searchPaths } from "./search.ts";
 
 const SMALL_BODY = 4 * 1024;
 /** A discovery listing of up to 2,000 [path, size] pairs. */
@@ -277,8 +277,7 @@ async function search(context: RequestContext, ownerId: string): Promise<Respons
   if (q.length === 0 || q.length > 200) throw new HttpError(400, "invalid_request", "Enter a search term of up to 200 characters.");
   await enforceLimit(db, `search:${ownerId}`, minuteBucket(now()), 60, "Too many searches. Wait a minute and try again.");
   const { version } = await activeVersion(context, ownerId);
-  const query = ftsQuery(q, "all");
-  const hits = query ? await searchChunks(db, version.id, query, 30) : [];
+  const hits = await searchChunks(db, version.id, q, "all", 30);
   const paths = await searchPaths(db, version.id, q, 20);
   return jsonResponse(
     {

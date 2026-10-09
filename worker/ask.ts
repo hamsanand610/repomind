@@ -3,7 +3,7 @@ import { AiBusyError, AiQuotaError, type ChatMessage, type ChatProvider, type Em
 import type { RepoRow, VersionRow } from "./ingest.ts";
 import type { Database, VectorizeBinding } from "./platform.ts";
 import { dayBucket, neuronsRemaining, readUsage, recordNeurons } from "./quota.ts";
-import { ftsQuery, searchChunks } from "./search.ts";
+import { searchChunks } from "./search.ts";
 
 /**
  * Grounded Q&A. Retrieval is limited to one repository version. The model
@@ -67,13 +67,10 @@ export async function retrieveEvidence(
 
   // Keyword retrieval never takes the request down with it.
   let keyword: Array<{ chunkId: string }> = [];
-  const query = ftsQuery(question, "any");
-  if (query) {
-    try {
-      keyword = await searchChunks(deps.db, version.id, query, KEYWORD_K);
-    } catch {
-      keyword = [];
-    }
+  try {
+    keyword = await searchChunks(deps.db, version.id, question, "any", KEYWORD_K);
+  } catch {
+    keyword = [];
   }
   add(keyword.map((hit) => hit.chunkId));
 
