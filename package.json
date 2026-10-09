@@ -11,7 +11,10 @@
     "deploy": "npm run build && wrangler deploy",
     "cf-typegen": "wrangler types",
     "test": "vitest run --project unit",
-    "test:integration": "npm run build && vitest run --project integration"
+    "test:integration": "npm run build && vitest run --project integration",
+    "bench:e1": "node --expose-gc --disable-warning=ExperimentalWarning bench/e1.ts",
+    "bench:storage": "node --disable-warning=ExperimentalWarning bench/storage.ts",
+    "bench:verify": "node --disable-warning=ExperimentalWarning bench/verify.ts"
   },
   "dependencies": {
     "react": "^19.2.8",

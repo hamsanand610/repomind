@@ -24,6 +24,9 @@ See [ADR 0001](docs/adr/0001-architecture-baseline.md) for the decisions and [do
 | `npm test` | Unit tests (Vitest, Node) |
 | `npm run test:integration` | Builds, then tests asset/API routing in the local workerd runtime |
 | `npm run cf-typegen` | Regenerates `worker-configuration.d.ts` after changing `wrangler.jsonc` |
+| `npm run bench:e1` | Local ingestion benchmark (add `-- --quick` for a smoke run); not Worker CPU time |
+| `npm run bench:storage` | Local SQLite/FTS5 storage-overhead experiment (in memory) |
+| `npm run bench:verify` | Checks chunking/redaction invariants over local public code and the fixture |
 | `npm run deploy` | Build and deploy. Requires Cloudflare login; deploy only when authorized. |
 
 ## Layout
@@ -31,8 +34,10 @@ See [ADR 0001](docs/adr/0001-architecture-baseline.md) for the decisions and [do
 ```
 src/        React app (src/styles/tokens.css holds the design tokens)
 worker/     Cloudflare Worker: app.ts (error boundary), router.ts, routes.ts, http.ts
-shared/     Pure TypeScript shared by the Worker and the browser (API contract, URL validation)
+shared/     Pure TypeScript shared by the Worker and the browser (API contract, URL validation,
+            ingest/: path safety, filtering, decoding, secret redaction, chunking)
 tests/      unit/ (Node) and integration/ (built output in workerd)
+bench/      E1 benchmark harness and deterministic synthetic fixture (results git-ignored)
 docs/       Architecture decisions and free-tier policy
 public/     Static files, including _headers (security headers for assets)
 ```

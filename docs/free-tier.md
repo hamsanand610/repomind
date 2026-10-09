@@ -28,8 +28,10 @@ Re-check before relying on any figure; limits change. Policy: [ADR 0001 §4](adr
 
 ## Estimates (to be replaced by measurements)
 
-- **Vectorize capacity:** 5M ÷ dims gives 4,882 vectors at 1024 dims, 9,765 at 512 and 19,531 at 256. A medium repository is about 1,000 chunks.
-- **Embedding a medium repository** (about 400k tokens): about 430 Neurons with qwen3-embedding or bge-m3.
+- **Vectorize capacity:** 5M ÷ dims gives 4,882 vectors at 1024 dims, 9,765 at 512 and 19,531 at 256.
+  - E1 measured about 34 lines (about 1.2 KB) per chunk, so a 60,000-line repository needs about 1,800 chunks, not the earlier estimate of about 1,000.
+  - A repository at the 1,500-chunk cap uses 30.7% of the Free allowance at 1024 dims and 7.7% at 256. See [E1 results](e1-results.md).
+- **Embedding a repository at the chunk cap** (about 520k tokens at an assumed 3.5 characters per token): about 560 Neurons with qwen3-embedding or bge-m3.
 - **One answer** with about 6k input and 600 output tokens: roughly 46–283 Neurons depending on the model, which is tens to a few hundred answers a day. Reasoning tokens would add to this.
 
 ## Unknowns that block design decisions
@@ -47,14 +49,14 @@ Re-check before relying on any figure; limits change. Policy: [ADR 0001 §4](adr
 
 **Question:** how many files can one invocation fetch, decode, filter, chunk, hash and serialise (with embedding-sized payloads) and still stay under 10 ms CPU on Free?
 
-**E1 — local, zero cost, no cloud resources.**
+**E1 — local, zero cost, no cloud resources.** Done 2026-10-09; see [E1 results](e1-results.md).
 - Benchmark the CPU-only stages in Node, which uses the same V8 engine family as workerd.
 - Corpus: a fixed set of local source files.
 - Payloads use synthetic 1024-dimension vectors.
 - Output: microseconds per KB and per chunk.
 - This is indicative only, not authoritative.
 
-**E2 — authoritative, effectively zero cost, needs login and approval.**
+**E2 — authoritative, effectively zero cost, needs login and approval.** Superseded in detail by the [E2 plan](e2-plan.md), which E1 refined; not executed.
 - Deploy a temporary Worker `repomind-cpu-spike` with **no bindings**.
 - It has one POST endpoint guarded by a random secret.
 - Each call fetches N files from `raw.githubusercontent.com` at a pinned commit SHA of a small public repository, runs the same stages with synthetic vectors, and returns counts only.

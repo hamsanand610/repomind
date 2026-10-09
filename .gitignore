@@ -29,3 +29,6 @@ dist-ssr
 !.dev.vars.example
 .env*
 !.env.example
+
+# local benchmark output (summaries live in docs/)
+bench/results
