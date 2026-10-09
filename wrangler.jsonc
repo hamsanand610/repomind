@@ -17,7 +17,40 @@
 	"observability": {
 		"enabled": true
 	},
-	"upload_source_maps": true
+	"upload_source_maps": true,
+	"workers_dev": true,
+	"preview_urls": false,
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "repomind-db",
+			"database_id": "f96ccf11-72fe-4343-833c-a4a46677aef5",
+			"migrations_dir": "migrations"
+		}
+	],
+	"vectorize": [
+		{
+			"binding": "VECTORIZE",
+			"index_name": "repomind-chunks"
+		}
+	],
+	"ai": {
+		"binding": "AI"
+	},
+	// Advances unfinished indexing jobs in the background (one small step per tick).
+	"triggers": {
+		"crons": ["* * * * *"]
+	},
+	// Non-secret configuration. Secrets (SESSION_SECRET, INVITE_CODES, optional
+	// GITHUB_TOKEN) are set with `wrangler secret put` and never committed.
+	"vars": {
+		"EMBEDDING_MODEL": "@cf/qwen/qwen3-embedding-0.6b",
+		"EMBEDDING_DIMS": "512",
+		"LLM_MODEL": "@cf/google/gemma-4-26b-a4b-it",
+		"DAILY_NEURON_BUDGET": "8500",
+		"MAX_CHUNKS_PER_REPO": "1500",
+		"MAX_REPOS_PER_OWNER": "5"
+	}
 	/**
 	 * Smart Placement
 	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement

@@ -3,12 +3,13 @@ import type { ApiErrorBody } from "../../shared/api.ts";
 import { handleRequest } from "../../worker/app.ts";
 import { HttpError, jsonResponse } from "../../worker/http.ts";
 import type { Route } from "../../worker/router.ts";
+import { createTestDatabase } from "../support/sqlite-db.ts";
 
 const ORIGIN = "https://repomind.test";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function call(path: string, init?: RequestInit, routes?: readonly Route[]): Promise<Response> {
-  return handleRequest(new Request(ORIGIN + path, init), routes);
+  return handleRequest(new Request(ORIGIN + path, init), { DB: createTestDatabase() }, routes);
 }
 
 function postJson(path: string, body: string, headers: Record<string, string> = {}): Promise<Response> {

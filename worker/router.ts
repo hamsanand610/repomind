@@ -1,10 +1,14 @@
 import { HttpError } from "./http.ts";
+import type { AppEnv } from "./platform.ts";
+import type { Services } from "./services.ts";
 
 export interface RequestContext {
   request: Request;
   url: URL;
   params: Readonly<Record<string, string>>;
   requestId: string;
+  env: AppEnv;
+  services: Services;
 }
 
 export type RouteHandler = (context: RequestContext) => Response | Promise<Response>;
@@ -21,20 +25,20 @@ export interface Route {
  * matches only with other methods yields 405 with an `Allow` header; no match
  * at all yields 404. Both are JSON errors, never the SPA's HTML.
  */
-export async function dispatch(
-  routes: readonly Route[],
-  request: Request,
-  url: URL,
-  requestId: string,
-): Promise<Response> {
-  const pathname = stripTrailingSlash(url.pathname);
+export async function dispatch(routes: readonly Route[], context: Omit<RequestContext, "params">): Promise<Response> {
+  const pathname = stripTrailingSlash(context.url.pathname);
   const allowedMethods: string[] = [];
 
-  for (const route of routes) {
-    const params = matchPath(route.pattern, pathname);
-    if (params === null) continue;
-    if (route.method === request.method) {
-      return route.handler({ request, url, params, requestId });
+  // Literal segments beat parameters: "/api/repos/validate" is never a repo ID.
+  const matches = routes
+    .map((route) => ({ route, params: matchPath(route.pattern, pathname) }))
+    .filter((match): match is { route: Route; params: Record<string, string> } => match.params !== null);
+  const specificity = (route: Route) => route.pattern.split("/").filter((part) => !part.startsWith(":")).length;
+  const best = Math.max(...matches.map((match) => specificity(match.route)));
+
+  for (const { route, params } of matches.filter((match) => specificity(match.route) === best)) {
+    if (route.method === context.request.method) {
+      return route.handler({ ...context, params });
     }
     allowedMethods.push(route.method);
   }

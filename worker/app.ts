@@ -1,6 +1,8 @@
 import { HttpError, errorResponse } from "./http.ts";
+import type { AppEnv } from "./platform.ts";
 import { type Route, dispatch } from "./router.ts";
 import { apiRoutes } from "./routes.ts";
+import { type ServiceOptions, createServices } from "./services.ts";
 
 const INTERNAL_ERROR_MESSAGE =
   "Something went wrong on our side. Try again, and quote the request ID if it keeps happening.";
@@ -12,7 +14,9 @@ const INTERNAL_ERROR_MESSAGE =
  */
 export async function handleRequest(
   request: Request,
+  env: AppEnv,
   routes: readonly Route[] = apiRoutes,
+  options: ServiceOptions = {},
 ): Promise<Response> {
   const url = new URL(request.url);
   if (!isApiPath(url.pathname)) {
@@ -22,7 +26,7 @@ export async function handleRequest(
 
   const requestId = crypto.randomUUID();
   try {
-    return await dispatch(routes, request, url, requestId);
+    return await dispatch(routes, { request, url, requestId, env, services: createServices(env, options) });
   } catch (error) {
     if (error instanceof HttpError) return errorResponse(error, requestId);
 
