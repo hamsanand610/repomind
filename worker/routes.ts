@@ -34,7 +34,7 @@ import {
   runStep,
   startVersion,
 } from "./ingest.ts";
-import { dayBucket, enforceLimit, minuteBucket } from "./quota.ts";
+import { dayBucket, enforceLimit, minuteBucket, quarterHourBucket } from "./quota.ts";
 import type { RequestContext, Route } from "./router.ts";
 import { commitUrl } from "./ask.ts";
 import { ftsQuery, listFiles, readFile, searchChunks, searchPaths } from "./search.ts";
@@ -107,7 +107,7 @@ async function login({ request, url, env, services, requestId }: RequestContext)
   // Throttle guesses per client address (hashed; the raw IP is never stored).
   const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
   const ipKey = await hashKey(`login:${ip}`);
-  await enforceLimit(services.db, `login:${ipKey}`, String(Math.floor(now / 900_000)), 10, "Too many sign-in attempts. Wait 15 minutes and try again.");
+  await enforceLimit(services.db, `login:${ipKey}`, quarterHourBucket(now), 10, "Too many sign-in attempts. Wait 15 minutes and try again.");
 
   const body = await readJsonBody(request, SMALL_BODY);
   const code = isRecord(body) && typeof body.code === "string" ? body.code.trim() : "";

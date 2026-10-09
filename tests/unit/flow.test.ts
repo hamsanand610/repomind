@@ -225,6 +225,40 @@ describe("repository flow", () => {
     expect(bad.status).toBe(400); // listing for a different repository
   });
 
+  it("deletes a repository with more than 100 chunks completely (D1's 100-parameter limit)", async () => {
+    const big: FakeRepo = {
+      ...REPO,
+      repo: "big",
+      files: Object.fromEntries(
+        [1, 2].map((n) => [`src/module${n}.ts`, Array.from({ length: 2_600 }, (_, i) => `export const value${n}_${i} = compute(${i});`).join("\n") + "\n"]),
+      ),
+    };
+    const fetchBig = fakeGitHubFetch([big]);
+    const callBig = (path: string, init: RequestInit & { cookie?: string } = {}) => {
+      const headers = new Headers(init.headers);
+      if (init.cookie) headers.set("Cookie", init.cookie);
+      if (init.body !== undefined) headers.set("Content-Type", "application/json");
+      return handleRequest(new Request(ORIGIN + path, { ...init, headers }), env, undefined, { fetch: fetchBig });
+    };
+    const cookie = await login(CODE_A);
+    const repo = (await (await callBig("/api/repos", { method: "POST", cookie, body: JSON.stringify({ url: "https://github.com/acme/big" }) })).json()) as RepoSummary;
+    for (let i = 0; i < 200; i++) {
+      const { outcome, repo: state } = (await (await callBig(`/api/repos/${repo.id}/step`, { method: "POST", cookie, body: "{}" })).json()) as { outcome: { kind: string }; repo: RepoSummary };
+      if (outcome.kind === "idle" && state.latest?.status !== "indexing") break;
+    }
+    const chunks = (db.sqlite.prepare("SELECT COUNT(*) AS n FROM chunks").get() as { n: number }).n;
+    expect(chunks).toBeGreaterThan(100);
+    expect(vectors.store.size).toBe(chunks);
+
+    expect((await callBig(`/api/repos/${repo.id}`, { method: "DELETE", cookie })).status).toBe(200);
+    const services = createServices(env, { fetch: fetchBig });
+    for (let id = await nextBackgroundVersion(db, Date.now()); id; id = await nextBackgroundVersion(db, Date.now())) await runStep(services, id);
+    for (const table of ["versions", "files", "chunks", "chunks_fts", "version_plans", "repos"]) {
+      expect(db.sqlite.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
+    }
+    expect(vectors.store.size).toBe(0);
+  });
+
   it("rejects private or missing repositories and non-GitHub URLs", async () => {
     const cookie = await login(CODE_A);
     expect((await call("/api/repos", { method: "POST", cookie, body: JSON.stringify({ url: "https://github.com/acme/secret" }) })).status).toBe(404);

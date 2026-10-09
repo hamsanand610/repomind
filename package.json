@@ -14,7 +14,9 @@
     "test:integration": "npm run build && vitest run --project integration",
     "bench:e1": "node --expose-gc --disable-warning=ExperimentalWarning bench/e1.ts",
     "bench:storage": "node --disable-warning=ExperimentalWarning bench/storage.ts",
-    "bench:verify": "node --disable-warning=ExperimentalWarning bench/verify.ts"
+    "bench:verify": "node --disable-warning=ExperimentalWarning bench/verify.ts",
+    "eval:server": "wrangler dev --config wrangler.eval.jsonc --port 8799 --ip 127.0.0.1 --persist-to .wrangler/eval-state --test-scheduled",
+    "eval": "node --disable-warning=ExperimentalWarning eval/run.ts"
   },
   "dependencies": {
     "react": "^19.2.8",

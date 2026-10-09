@@ -32,3 +32,6 @@ dist-ssr
 
 # local benchmark output (summaries live in docs/)
 bench/results
+
+# local evaluation output
+eval/results

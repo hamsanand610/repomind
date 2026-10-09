@@ -29,6 +29,8 @@ class SqliteStatement implements Statement {
   }
 
   bind(...values: unknown[]): Statement {
+    // Mirror D1: more than 100 bound parameters is an error in production.
+    if (values.length > 100) throw new Error(`D1 allows at most 100 bound parameters; got ${values.length}`);
     return new SqliteStatement(this.sqlite, this.sql, values.map(normalize));
   }
 

@@ -1,0 +1,39 @@
+/**
+ * Local-only evaluation configuration. NEVER deploy this file.
+ * `npm run eval:server` runs it with local D1 state (.wrangler/eval-state),
+ * the separate "repomind-eval" Vectorize index and real Workers AI, so the
+ * evaluation never touches production data or production credentials.
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "repomind-eval",
+	"main": "eval/worker.ts",
+	"compatibility_date": "2026-10-06",
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "repomind-db",
+			"database_id": "f96ccf11-72fe-4343-833c-a4a46677aef5",
+			"migrations_dir": "migrations"
+		}
+	],
+	"vectorize": [
+		{
+			"binding": "VECTORIZE",
+			"index_name": "repomind-eval",
+			"remote": true
+		}
+	],
+	"ai": {
+		"binding": "AI",
+		"remote": true
+	},
+	"vars": {
+		"EMBEDDING_MODEL": "@cf/qwen/qwen3-embedding-0.6b",
+		"EMBEDDING_DIMS": "512",
+		"LLM_MODEL": "@cf/google/gemma-4-26b-a4b-it",
+		"DAILY_NEURON_BUDGET": "8500",
+		"MAX_CHUNKS_PER_REPO": "1500",
+		"MAX_REPOS_PER_OWNER": "5"
+	}
+}

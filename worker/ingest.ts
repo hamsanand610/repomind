@@ -34,6 +34,9 @@ const STEP_MAX_CHUNKS = 240;
 const EMBED_BATCH = 16;
 const MAX_EMBED_CHARS = 6_000;
 const CLEANUP_BATCH = 400;
+/** D1 rejects queries with more than 100 bound parameters. */
+const MAX_IN_PARAMS = 90;
+const VECTOR_DELETE_BATCH = 100;
 const CRASH_RETRY_SINGLE = 2;
 const CRASH_SKIP = 4;
 
@@ -436,13 +439,24 @@ async function cleanupStep(deps: IngestDeps, version: VersionRow): Promise<StepO
     .all<{ rowid: number; id: string; embedded: number }>();
   if (results.length > 0) {
     const embeddedIds = results.filter((row) => row.embedded === 1).map((row) => row.id);
-    if (embeddedIds.length > 0 && deps.vectors) await deps.vectors.deleteByIds(embeddedIds);
+    if (deps.vectors) {
+      for (let i = 0; i < embeddedIds.length; i += VECTOR_DELETE_BATCH) {
+        await deps.vectors.deleteByIds(embeddedIds.slice(i, i + VECTOR_DELETE_BATCH));
+      }
+    }
+    // D1 allows at most 100 bound parameters per query, so delete in slices
+    // inside one atomic batch.
     const rowids = results.map((row) => row.rowid);
-    const list = rowids.map(() => "?").join(", ");
-    await db.batch([
-      db.prepare(`DELETE FROM chunks_fts WHERE rowid IN (${list})`).bind(...rowids),
-      db.prepare(`DELETE FROM chunks WHERE rowid IN (${list})`).bind(...rowids),
-    ]);
+    const statements = [];
+    for (let i = 0; i < rowids.length; i += MAX_IN_PARAMS) {
+      const part = rowids.slice(i, i + MAX_IN_PARAMS);
+      const list = part.map(() => "?").join(", ");
+      statements.push(
+        db.prepare(`DELETE FROM chunks_fts WHERE rowid IN (${list})`).bind(...part),
+        db.prepare(`DELETE FROM chunks WHERE rowid IN (${list})`).bind(...part),
+      );
+    }
+    await db.batch(statements);
     return { kind: "cleaned", rows: results.length };
   }
   await db.batch([

@@ -15,6 +15,18 @@ export function minuteBucket(now: number): string {
   return new Date(now).toISOString().slice(0, 16);
 }
 
+/** 15-minute window, in the same sortable ISO form as the other buckets. */
+export function quarterHourBucket(now: number): string {
+  return new Date(Math.floor(now / 900_000) * 900_000).toISOString().slice(0, 16);
+}
+
+/** Deletes counters older than two days; only today's ledger and recent windows matter. */
+export async function pruneUsage(db: Database, now: number): Promise<number> {
+  const cutoff = dayBucket(now - 2 * 86_400_000);
+  const result = await db.prepare("DELETE FROM usage_counters WHERE bucket < ?").bind(cutoff).run();
+  return result.meta.changes ?? 0;
+}
+
 /** Milliseconds until the next 00:00 UTC, when Workers AI's free allocation resets. */
 export function msUntilUtcMidnight(now: number): number {
   const next = new Date(now);
