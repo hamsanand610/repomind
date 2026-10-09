@@ -1,32 +1,46 @@
-# React + TypeScript + Vite
+# RepoMind
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+RepoMind is a read-only assistant that answers questions about a software project. It indexes a public GitHub repository and answers with citations to the exact files and lines it used. When the evidence isn't there, it says so.
 
-Currently, two official plugins are available:
+It never modifies, commits to or executes the repositories it reads.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+**Status:** M0 (foundation). The API skeleton, security boundaries, tests and design tokens are in place; repository ingestion and chat come in later milestones.
 
-## React Compiler
+## Stack
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- React 19, TypeScript and Vite 8, served as Cloudflare Workers Static Assets.
+- One Cloudflare Worker for the API under `/api/*`.
+- Planned: D1, Vectorize, Workers AI and Queues, all on the Workers **Free** plan.
 
-## Expanding the Oxlint configuration
+See [ADR 0001](docs/adr/0001-architecture-baseline.md) for the decisions and [docs/free-tier.md](docs/free-tier.md) for the verified limits.
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+## Scripts
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+| Command | What it does |
+|---|---|
+| `npm run dev` | Local dev server (Vite + Workers runtime) |
+| `npm run lint` | oxlint |
+| `npm run build` | Type-check all projects, then the production build |
+| `npm test` | Unit tests (Vitest, Node) |
+| `npm run test:integration` | Builds, then tests asset/API routing in the local workerd runtime |
+| `npm run cf-typegen` | Regenerates `worker-configuration.d.ts` after changing `wrangler.jsonc` |
+| `npm run deploy` | Build and deploy. Requires Cloudflare login; deploy only when authorized. |
+
+## Layout
+
+```
+src/        React app (src/styles/tokens.css holds the design tokens)
+worker/     Cloudflare Worker: app.ts (error boundary), router.ts, routes.ts, http.ts
+shared/     Pure TypeScript shared by the Worker and the browser (API contract, URL validation)
+tests/      unit/ (Node) and integration/ (built output in workerd)
+docs/       Architecture decisions and free-tier policy
+public/     Static files, including _headers (security headers for assets)
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+## Secrets
+
+Never commit secrets:
+- **Production:** use `wrangler secret put <NAME>`.
+- **Local development:** use `.dev.vars`, which is git-ignored.
+
+Nothing secret may use a `VITE_` prefix, because those values ship to the browser.

@@ -1,0 +1,85 @@
+# Free-tier limits, cost policy and the CPU feasibility experiment
+
+All facts were re-checked against official Cloudflare documentation on **2026-10-09**. Each item is labelled:
+- **Verified:** stated on the linked official page.
+- **Estimate:** our own arithmetic.
+- **Unknown:** not stated in the official docs.
+
+Re-check before relying on any figure; limits change. Policy: [ADR 0001 §4](adr/0001-architecture-baseline.md#4-free-tier-policy).
+
+## Verified limits (Workers Free plan)
+
+| Service | Limit | Over the limit | Source |
+|---|---|---|---|
+| Workers | 100,000 requests/day, reset 00:00 UTC | Error 1027, no charge | [limits][w] |
+| Workers | **10 ms CPU** per HTTP request and per Cron Trigger; waiting on I/O is not counted | Error 1102, outcome `exceededCpu` | [limits][w] |
+| Workers | 128 MB memory per isolate; 50 subrequests per invocation; separately, 1,000 subrequests to internal services | — | [limits][w] |
+| Static assets | Asset requests are free and unlimited; `_headers` supports up to 100 rules and does **not** apply to Worker responses | — | [assets billing][sa], [headers][sh] |
+| D1 | 10 databases; 500 MB per database; 5 GB per account; 50 queries per invocation; 100 KB per statement; 100 bound parameters; 2 MB per row | — | [D1 limits][d1] |
+| D1 | 5M rows read/day, 100k rows written/day | Queries error until 00:00 UTC (enforced since 2026-09-01) | [D1 pricing][d1p], [changelog][d1c] |
+| Vectorize | 5M stored dimensions; 30M queried dimensions per month; queried = (stored vectors + queries) × dims | **Unknown** for Free | [pricing][vp] |
+| Vectorize | 100 indexes; ≤1,536 dims; 1,000 namespaces per index; 64-byte IDs; 10 KiB metadata; topK 100 (50 with values or metadata); 1,000 per upsert | — | [limits][vl] |
+| Workers AI | 10,000 Neurons/day | "Further operations will fail with an error" | [pricing][ap] |
+| Workers AI | 300 requests/min for text generation, 3,000 for embeddings | Whether this differs between Free and Paid is not stated | [limits][al] |
+| Workers AI | qwen3-embedding-0.6b and bge-m3: 1,075 Neurons per M input tokens | — | [pricing][ap] |
+| Queues | 10,000 operations/day; one operation per 64 KB written, read or deleted; each retry is a read; 24 h retention | **Unknown** for Free | [pricing][qp], [changelog][qc] |
+| Rate Limiting binding | Period 10 or 60 s; limits are per location and eventually consistent | Free availability and pricing not stated | [rate limit][rl] |
+| Zero Trust (Access) | The Free plan still requires entering payment details ("you will not be charged") | — | [setup][zt] |
+
+## Estimates (to be replaced by measurements)
+
+- **Vectorize capacity:** 5M ÷ dims gives 4,882 vectors at 1024 dims, 9,765 at 512 and 19,531 at 256. A medium repository is about 1,000 chunks.
+- **Embedding a medium repository** (about 400k tokens): about 430 Neurons with qwen3-embedding or bge-m3.
+- **One answer** with about 6k input and 600 output tokens: roughly 46–283 Neurons depending on the model, which is tens to a few hundred answers a day. Reasoning tokens would add to this.
+
+## Unknowns that block design decisions
+
+1. The **queue consumer CPU limit on Free.** The limits page lists 10 ms for HTTP and Cron only.
+2. **Over-limit behaviour** of Vectorize and Queues on Free.
+3. Whether **Workers AI binding calls** count toward the 50 subrequests or the 1,000 internal-service subrequests.
+4. Whether the **Rate Limiting binding** exists on Free.
+5. **Actual CPU per ingestion batch.** Addressed by the experiment below.
+6. **qwen3-embedding output dimension** as served by Workers AI. The model page doesn't state it; AI Search docs say 1024.
+7. **D1 rows written per FTS5 insert.**
+8. **Rate limits on `raw.githubusercontent.com`,** which aren't documented.
+
+## The smallest CPU feasibility experiment (M1)
+
+**Question:** how many files can one invocation fetch, decode, filter, chunk, hash and serialise (with embedding-sized payloads) and still stay under 10 ms CPU on Free?
+
+**E1 — local, zero cost, no cloud resources.**
+- Benchmark the CPU-only stages in Node, which uses the same V8 engine family as workerd.
+- Corpus: a fixed set of local source files.
+- Payloads use synthetic 1024-dimension vectors.
+- Output: microseconds per KB and per chunk.
+- This is indicative only, not authoritative.
+
+**E2 — authoritative, effectively zero cost, needs login and approval.**
+- Deploy a temporary Worker `repomind-cpu-spike` with **no bindings**.
+- It has one POST endpoint guarded by a random secret.
+- Each call fetches N files from `raw.githubusercontent.com` at a pinned commit SHA of a small public repository, runs the same stages with synthetic vectors, and returns counts only.
+- Sweep N ∈ {5, 10, 20, 40}, 20 calls each: 80 requests and 0 Neurons.
+- Read the outcomes (`exceededCpu` or Error 1102 vs `ok`) and the CPU-time percentiles from Workers metrics or `wrangler tail`.
+- Delete the Worker afterwards.
+- **Decision rule:** take the largest N with zero CPU-limit failures and p99 CPU ≤ 7 ms (30% headroom).
+
+**E3 — optional, under 50 Neurons, needs approval.**
+- Repeat the chosen N with real `@cf/qwen/qwen3-embedding-0.6b` calls.
+- This includes parsing real AI responses and confirms the served embedding dimension.
+
+**Queue consumer check:** if E2 passes, M1 repeats the best N inside a queue consumer, because its Free CPU limit is undocumented. This needs a Queue, which needs approval.
+
+[w]: https://developers.cloudflare.com/workers/platform/limits/
+[sa]: https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/
+[sh]: https://developers.cloudflare.com/workers/static-assets/headers/
+[d1]: https://developers.cloudflare.com/d1/platform/limits/
+[d1p]: https://developers.cloudflare.com/d1/platform/pricing/
+[d1c]: https://developers.cloudflare.com/changelog/post/2026-09-01-d1-free-tier-limit-enforcement/
+[vp]: https://developers.cloudflare.com/vectorize/platform/pricing/
+[vl]: https://developers.cloudflare.com/vectorize/platform/limits/
+[ap]: https://developers.cloudflare.com/workers-ai/platform/pricing/
+[al]: https://developers.cloudflare.com/workers-ai/platform/limits/
+[qp]: https://developers.cloudflare.com/queues/platform/pricing/
+[qc]: https://developers.cloudflare.com/changelog/post/2026-02-04-queues-free-plan/
+[rl]: https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/
+[zt]: https://developers.cloudflare.com/cloudflare-one/setup/

@@ -1,0 +1,167 @@
+/*
+ * RepoMind design tokens.
+ *
+ * Light, warm identity: warm neutrals, sage green (primary), muted terracotta
+ * (accent) and charcoal (text). No blue-dominant colours.
+ *
+ * Components use the semantic tokens (--color-*, --space-*, ...). The
+ * --palette-* primitives exist only to define them.
+ *
+ * Contrast ratios were measured on 2026-10-09 (WCAG 2.x formula) against
+ * --color-canvas unless noted. Text pairs meet AA (>= 4.5:1); control borders
+ * and focus rings meet the 3:1 non-text minimum.
+ */
+:root {
+  /* Palette primitives */
+  --palette-sand-50: #fffdf9;
+  --palette-sand-100: #faf8f4;
+  --palette-sand-200: #f3efe8;
+  --palette-sand-300: #ece6dc;
+  --palette-sand-400: #e2dad0;
+  --palette-stone-500: #8c8174;
+  --palette-stone-600: #6e655c;
+  --palette-stone-700: #5f574f;
+  --palette-charcoal-800: #2b2724;
+  --palette-charcoal-900: #1e1b18;
+
+  --palette-sage-50: #f0f3ee;
+  --palette-sage-100: #e0e7db;
+  --palette-sage-200: #c5d2bd;
+  --palette-sage-500: #6b8660;
+  --palette-sage-600: #56704c;
+  --palette-sage-700: #445a3c;
+  --palette-sage-800: #34452f;
+
+  --palette-terracotta-50: #fbf0ea;
+  --palette-terracotta-100: #f5dccf;
+  --palette-terracotta-500: #bc6743;
+  --palette-terracotta-600: #9f5434;
+  --palette-terracotta-700: #82432a;
+
+  --palette-ochre-50: #faf1da;
+  --palette-ochre-700: #6e5210;
+  --palette-brick-50: #fbeae6;
+  --palette-brick-700: #9a3326;
+
+  /* Surfaces */
+  --color-canvas: var(--palette-sand-100); /* page background */
+  --color-surface: var(--palette-sand-50); /* cards, panels */
+  --color-surface-muted: var(--palette-sand-200); /* sidebars, table headers */
+  --color-surface-sunken: var(--palette-sand-300); /* wells, progress tracks */
+  --color-code-bg: #f1ece4; /* code text on it: 12.59:1 */
+
+  /* Borders */
+  --color-border: var(--palette-sand-400); /* decorative dividers only */
+  --color-border-control: var(--palette-stone-500); /* inputs, controls: 3.59:1 */
+
+  /* Text */
+  --color-text: var(--palette-charcoal-800); /* 13.96:1 */
+  --color-text-strong: var(--palette-charcoal-900);
+  --color-text-muted: var(--palette-stone-700); /* 6.68:1 */
+  --color-text-subtle: var(--palette-stone-600); /* 5.38:1 */
+  --color-link: var(--palette-sage-700); /* 7.14:1 */
+
+  /* Brand */
+  --color-primary: var(--palette-sage-600); /* white text on it: 5.50:1 */
+  --color-primary-hover: var(--palette-sage-700); /* white text on it: 7.57:1 */
+  --color-primary-subtle: var(--palette-sage-50);
+  --color-primary-border: var(--palette-sage-200);
+  --color-on-primary: #ffffff;
+  --color-brand-mark: var(--palette-sage-500); /* non-text: 3.80:1 */
+  --color-accent: var(--palette-terracotta-500); /* non-text only: 3.84:1 */
+  --color-accent-strong: var(--palette-terracotta-700); /* text: 7.11:1 */
+  --color-accent-subtle: var(--palette-terracotta-50);
+  --color-citation-highlight: var(--palette-terracotta-50); /* cited-line background */
+  --color-focus-ring: var(--palette-terracotta-500); /* 3.84:1 */
+
+  /* Status. Always pair colour with an icon or a text label. */
+  --color-success-text: var(--palette-sage-800); /* on success-bg: 9.20:1 */
+  --color-success-bg: var(--palette-sage-50);
+  --color-warning-text: var(--palette-ochre-700); /* on warning-bg: 6.48:1 */
+  --color-warning-bg: var(--palette-ochre-50);
+  --color-danger-text: var(--palette-brick-700); /* on danger-bg: 6.26:1 */
+  --color-danger-bg: var(--palette-brick-50);
+  --color-info-text: var(--palette-stone-700); /* on info-bg: 6.18:1 */
+  --color-info-bg: var(--palette-sand-200);
+
+  /* Typography (system fonts: no web-font download) */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-md: 1rem;
+  --font-size-lg: 1.125rem;
+  --font-size-xl: 1.375rem;
+  --font-size-2xl: 1.75rem;
+  --font-size-display: clamp(1.75rem, 1.35rem + 1.8vw, 2.5rem);
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.55;
+  --line-height-code: 1.6;
+  --letter-spacing-tight: -0.01em;
+
+  /* Spacing (4px base) */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* Shape */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+  --border-width: 1px;
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  /* Elevation (charcoal-tinted, never pure black) */
+  --shadow-sm: 0 1px 2px rgb(43 39 36 / 0.06);
+  --shadow-md: 0 1px 2px rgb(43 39 36 / 0.05), 0 4px 12px rgb(43 39 36 / 0.06);
+  --shadow-lg: 0 8px 24px rgb(43 39 36 / 0.1);
+
+  /* Motion */
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  /* Layout */
+  --layout-max-width: 72rem;
+  --layout-reading-width: 46rem;
+  --layout-sidebar-width: 17.5rem;
+  --layout-header-height: 3.5rem;
+  --layout-gutter: var(--space-4); /* 16px on phones */
+
+  /*
+   * Breakpoints. Media queries cannot read custom properties, so use these
+   * literal values: sm 40rem (640px), md 48rem (768px), lg 64rem (1024px),
+   * xl 80rem (1280px). Mobile-first: style the phone layout, then add min-width.
+   */
+
+  /* Layers */
+  --z-sticky: 10;
+  --z-overlay: 40;
+  --z-modal: 50;
+  --z-toast: 60;
+}
+
+@media (min-width: 48rem) {
+  :root {
+    --layout-gutter: var(--space-6);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-normal: 0ms;
+  }
+}

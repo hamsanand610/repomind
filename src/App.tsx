@@ -1,147 +1,118 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import cloudflareLogo from './assets/cloudflare.svg'
-import heroImg from './assets/hero.png'
+import { useEffect, useState } from 'react'
+import { ApiError, fetchHealth } from './lib/api.ts'
 import './App.css'
 
+type HealthState =
+  | { kind: 'checking' }
+  | { kind: 'ok' }
+  | { kind: 'error'; message: string; requestId: string | null }
+
+/**
+ * M0 foundation shell: brand, read-only promise and a real API health check.
+ * Onboarding, repository views and chat arrive in later milestones.
+ */
 function App() {
-  const [count, setCount] = useState(0)
-  const [name, setName] = useState('unknown')
+  const [health, setHealth] = useState<HealthState>({ kind: 'checking' })
+  const [attempt, setAttempt] = useState(0)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchHealth(controller.signal).then(
+      () => setHealth({ kind: 'ok' }),
+      (error: unknown) => {
+        if (controller.signal.aborted) return
+        setHealth(
+          error instanceof ApiError
+            ? { kind: 'error', message: error.message, requestId: error.requestId }
+            : { kind: 'error', message: 'Something unexpected happened. Try again.', requestId: null },
+        )
+      },
+    )
+    return () => controller.abort()
+  }, [attempt])
+
+  const retry = () => {
+    setHealth({ kind: 'checking' })
+    setAttempt((n) => n + 1)
+  }
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
+    <div className="app">
+      <header className="app-header">
+        <div className="app-header__inner">
+          <span className="brand">
+            <span className="brand__mark" aria-hidden="true" />
+            RepoMind
+          </span>
+          <span className="pill">Read-only</span>
         </div>
-        <div>
-          <h1>Get started with Cloudflare</h1>
-          <p>
-            Edit <code>src/App.tsx</code> or <code>worker/index.ts</code> and save to test <code>HMR</code>
+      </header>
+
+      <main className="app-main">
+        <section className="intro">
+          <h1>Understand a codebase by asking it questions.</h1>
+          <p className="intro__lead">
+            RepoMind indexes a public GitHub repository and answers with citations to the exact files and
+            lines it used. It never modifies, commits to or runs your code, and it tells you when the
+            evidence isn't there.
           </p>
-        </div>
-        <ul style={{ display: 'flex', gap: '1rem', listStyle: 'none', padding: 0 }}>
-          <li>
-            <button
-              className="counter"
-              onClick={() => setCount((count) => count + 1)}
-            >
-              Count is {count}
-            </button>
-          </li>
-          <li>
-          <button
-            className="counter"
-            onClick={() => {
-              fetch('/api/')
-                .then((res) => res.json())
-                .then((data) => setName(data.name))
-            }}
-            aria-label='get name'
-          >
-            Name from API is: {name}
-          </button>
-          </li>
-        </ul>
+        </section>
 
+        <section className="card" aria-labelledby="status-heading">
+          <h2 id="status-heading" className="card__title">
+            Service status
+          </h2>
+          <div aria-live="polite">
+            <HealthStatus state={health} onRetry={retry} />
+          </div>
+        </section>
 
-      </section>
+        <p className="note">Repository indexing and chat are being built in the next milestones.</p>
+      </main>
 
-      <div className="ticks"></div>
+      <footer className="app-footer">
+        <p>RepoMind answers only from indexed evidence and cites every source it uses.</p>
+      </footer>
+    </div>
+  )
+}
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-            <li>
-              <a href="https://workers.cloudflare.com/" target="_blank">
-                <img className="button-icon" src={cloudflareLogo} alt="" />
-                Workers Docs
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+function HealthStatus({ state, onRetry }: { state: HealthState; onRetry: () => void }) {
+  if (state.kind === 'checking') {
+    return (
+      <p className="status status--checking">
+        <span className="status__dot" aria-hidden="true" />
+        Checking the API…
+      </p>
+    )
+  }
+  if (state.kind === 'ok') {
+    return (
+      <p className="status status--ok">
+        <span className="status__icon" aria-hidden="true">
+          ✓
+        </span>
+        API reachable
+      </p>
+    )
+  }
+  return (
+    <div className="status status--error" role="alert">
+      <p>
+        <span className="status__icon" aria-hidden="true">
+          !
+        </span>
+        {state.message}
+      </p>
+      {state.requestId && (
+        <p className="status__meta">
+          Request ID: <code>{state.requestId}</code>
+        </p>
+      )}
+      <button type="button" className="button button--secondary" onClick={onRetry}>
+        Try again
+      </button>
+    </div>
   )
 }
 
