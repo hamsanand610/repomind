@@ -50,7 +50,7 @@ export async function searchChunks(db: Database, versionId: string, query: strin
        JOIN chunks c ON c.rowid = chunks_fts.rowid
        JOIN files f ON f.version_id = c.version_id AND f.ordinal = c.ordinal
        WHERE chunks_fts MATCH ? AND c.version_id = ?
-       ORDER BY bm25(chunks_fts)
+       ORDER BY bm25(chunks_fts, 1.0, 0.6)
        LIMIT ?`,
     )
     .bind(query, versionId, limit)

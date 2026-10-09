@@ -160,6 +160,17 @@ export interface AskResponse {
   answer: string | null;
   citations: Citation[];
   message?: string;
-  retrieval: { keywordHits: number; vectorHits: number; semantic: boolean };
+  retrieval: {
+    keywordHits: number;
+    vectorHits: number;
+    semantic: boolean;
+    /**
+     * used: vector matches contributed. no_matches: searched, nothing close.
+     * pending: vectors were written but the index has not caught up yet.
+     * unavailable: AI or vector service failed or quota reached.
+     * off: this index has no vectors (yet).
+     */
+    semanticStatus: "used" | "no_matches" | "pending" | "unavailable" | "off";
+  };
   commitSha: string;
 }

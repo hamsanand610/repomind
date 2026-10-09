@@ -20,6 +20,14 @@ interface Turn {
 const conversations = new Map<string, Turn[]>()
 let nextId = 1
 
+const RETRIEVAL_LABEL: Record<AskResponse['retrieval']['semanticStatus'], string> = {
+  used: 'keyword + semantic retrieval',
+  no_matches: 'keyword retrieval (no close semantic matches)',
+  pending: 'keyword retrieval; the semantic index is still catching up with newly added vectors',
+  unavailable: 'keyword retrieval; semantic search is unavailable right now',
+  off: 'keyword retrieval',
+}
+
 const SUGGESTIONS = [
   'What does this project do?',
   'Which languages, frameworks and dependencies does it use?',
@@ -128,7 +136,7 @@ function Answer({ repo, response }: { repo: RepoSummary; response: AskResponse }
     setFocused(number)
     listRef.current?.querySelector(`[data-citation="${number}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   }
-  const retrieval = response.retrieval.semantic ? 'keyword + semantic retrieval' : 'keyword retrieval'
+  const retrieval = RETRIEVAL_LABEL[response.retrieval.semanticStatus] ?? 'keyword retrieval'
 
   return (
     <div className="stack">

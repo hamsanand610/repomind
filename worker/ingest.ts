@@ -1,5 +1,6 @@
 import type { AdmissionReport } from "../shared/ingest/admission.ts";
 import { DEFAULT_ADMISSION_LIMITS, admitRepository } from "../shared/ingest/admission.ts";
+import { identifierWords } from "../shared/ingest/identifiers.ts";
 import { INGEST_LIMITS } from "../shared/ingest/limits.ts";
 import { type ChunkRecord, type IndexedFile, type SkippedFile, processFile } from "../shared/ingest/pipeline.ts";
 import type { Discovery } from "../shared/discovery.ts";
@@ -61,6 +62,7 @@ export interface VersionRow {
   chunks_total: number;
   chunks_embeddable: number;
   chunks_embedded: number;
+  vectors_upserted_at: number;
   embedding_model: string | null;
   embedding_dims: number | null;
   embedding_note: string | null;
@@ -321,14 +323,14 @@ async function commitWindow(
     file.status === "indexed" ? file.chunkCount : 0,
     file.status === "indexed" ? file.secretsRedacted : 0,
   ]);
-  const chunkRows = chunks.map((chunk) => [chunk.id, version.id, chunk.ordinal, chunk.seq, chunk.startLine, chunk.endLine, chunk.text, chunk.embeddable ? 1 : 0]);
+  const chunkRows = chunks.map((chunk) => [chunk.id, version.id, chunk.ordinal, chunk.seq, chunk.startLine, chunk.endLine, chunk.text, identifierWords(chunk.text), chunk.embeddable ? 1 : 0]);
   await db.batch([
     ...insertRows(db, "INSERT OR IGNORE INTO files (version_id, ordinal, path, language, size, status, skip_reason, line_count, chunk_count, secrets_redacted)", 10, fileRows),
-    ...insertRows(db, "INSERT OR IGNORE INTO chunks (id, version_id, ordinal, seq, start_line, end_line, text, embeddable)", 8, chunkRows),
+    ...insertRows(db, "INSERT OR IGNORE INTO chunks (id, version_id, ordinal, seq, start_line, end_line, text, ident, embeddable)", 9, chunkRows),
     db
       .prepare(
-        `INSERT INTO chunks_fts (rowid, text)
-         SELECT c.rowid, c.text FROM chunks c
+        `INSERT INTO chunks_fts (rowid, text, ident)
+         SELECT c.rowid, c.text, c.ident FROM chunks c
          WHERE c.version_id = ? AND c.ordinal >= ? AND c.ordinal < ?
            AND NOT EXISTS (SELECT 1 FROM chunks_fts f WHERE f.rowid = c.rowid)`,
       )
@@ -412,9 +414,9 @@ async function embedStep(deps: IngestDeps, version: VersionRow, embedder: Embedd
     db
       .prepare(
         `UPDATE versions SET chunks_embedded = (SELECT COUNT(*) FROM chunks WHERE version_id = ? AND embedded = 1),
-           embedding_model = ?, embedding_dims = ?, embedding_note = NULL, updated_at = ? WHERE id = ?`,
+           embedding_model = ?, embedding_dims = ?, embedding_note = NULL, vectors_upserted_at = ?, updated_at = ? WHERE id = ?`,
       )
-      .bind(version.id, embedder.model, embedder.dims, now, version.id),
+      .bind(version.id, embedder.model, embedder.dims, deps.now(), now, version.id),
   ]);
   return { kind: "embedded", chunks: results.length };
 }

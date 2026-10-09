@@ -149,6 +149,16 @@ describe("repository flow", () => {
     expect(answer.citations).toHaveLength(1);
     expect(answer.citations[0].url).toMatch(new RegExp(`^https://github\\.com/acme/widget/blob/${REPO.sha}/.+#L\\d+(-L\\d+)?$`));
 
+    expect(["used", "no_matches"]).toContain(answer.retrieval.semanticStatus);
+    // A question that shares wording with the code gets vector matches too.
+    const semantic = (await (await call(`/api/repos/${repo.id}/ask`, { method: "POST", cookie, body: JSON.stringify({ question: "createHmac sha256 secret update payload digest hex signature" }) })).json()) as AskResponse;
+    expect(semantic.retrieval.semanticStatus).toBe("used");
+    expect(semantic.retrieval.vectorHits).toBeGreaterThan(0);
+
+    // Identifier-aware keyword search: plain words find a camelCase identifier.
+    const words = (await (await call(`/api/repos/${repo.id}/search?q=${encodeURIComponent("save user")}`, { cookie })).json()) as SearchResponse;
+    expect(words.hits.map((h) => h.path)).toContain("src/db.ts");
+
     const abstain = (await (await call(`/api/repos/${repo.id}/ask`, { method: "POST", cookie, body: JSON.stringify({ question: "How does payment processing work?" }) })).json()) as AskResponse;
     expect(abstain.status).toBe("insufficient_evidence");
     expect(abstain.citations).toEqual([]);
@@ -219,6 +229,17 @@ describe("repository flow", () => {
     const cookie = await login(CODE_A);
     expect((await call("/api/repos", { method: "POST", cookie, body: JSON.stringify({ url: "https://github.com/acme/secret" }) })).status).toBe(404);
     expect((await call("/api/repos", { method: "POST", cookie, body: JSON.stringify({ url: "https://evil.example/acme/widget" }) })).status).toBe(400);
+  });
+
+  it("reports a semantic index that has not caught up yet, and still answers from keywords", async () => {
+    const lagging = fakeVectorize();
+    env = { ...env, VECTORIZE: { ...lagging, query: async () => ({ matches: [] }), describe: async () => ({ processedUpToDatetime: 1 }) } };
+    const cookie = await login(CODE_A);
+    const repo = (await (await call("/api/repos", { method: "POST", cookie, body: JSON.stringify({ url: "https://github.com/acme/widget" }) })).json()) as RepoSummary;
+    await indexToCompletion(cookie, repo.id);
+    const answer = (await (await call(`/api/repos/${repo.id}/ask`, { method: "POST", cookie, body: JSON.stringify({ question: "How are tokens verified?" }) })).json()) as AskResponse;
+    expect(answer.retrieval.semanticStatus).toBe("pending");
+    expect(answer.status).toBe("answered");
   });
 
   it("pauses semantic indexing gracefully when the vector index fails, without server errors", async () => {

@@ -33,61 +33,150 @@ export interface Evidence {
 const KEYWORD_K = 12;
 const VECTOR_K = 12;
 const EVIDENCE_LIMIT = 8;
-const EVIDENCE_CHARS = 2_400;
+/** The top hits get their adjacent chunks merged in, as whole contiguous lines. */
+const NEIGHBOR_EXPANSIONS = 4;
+const BLOCK_CHARS = 3_600;
+const TOTAL_EVIDENCE_CHARS = 18_000;
 const MIN_VECTOR_SCORE = 0.3;
 const MAX_ANSWER_TOKENS = 1_000;
 const RRF_K = 60;
+
+export type SemanticStatus = AskResponse["retrieval"]["semanticStatus"];
+
+interface ChunkRow {
+  chunkId: string;
+  ordinal: number;
+  seq: number;
+  path: string;
+  startLine: number;
+  endLine: number;
+  text: string;
+}
+
+const CHUNK_COLUMNS = `c.id AS chunkId, c.ordinal AS ordinal, c.seq AS seq, f.path AS path,
+  c.start_line AS startLine, c.end_line AS endLine, c.text AS text
+  FROM chunks c JOIN files f ON f.version_id = c.version_id AND f.ordinal = c.ordinal`;
 
 export async function retrieveEvidence(
   deps: AskDeps,
   version: VersionRow,
   question: string,
-): Promise<{ evidence: Evidence[]; keywordHits: number; vectorHits: number; semantic: boolean }> {
+): Promise<{ evidence: Evidence[]; keywordHits: number; vectorHits: number; semanticStatus: SemanticStatus }> {
   const ranked = new Map<string, number>();
   const add = (ids: string[]) => ids.forEach((id, rank) => ranked.set(id, (ranked.get(id) ?? 0) + 1 / (RRF_K + rank + 1)));
 
+  // Keyword retrieval never takes the request down with it.
+  let keyword: Array<{ chunkId: string }> = [];
   const query = ftsQuery(question, "any");
-  const keyword = query ? await searchChunks(deps.db, version.id, query, KEYWORD_K) : [];
+  if (query) {
+    try {
+      keyword = await searchChunks(deps.db, version.id, query, KEYWORD_K);
+    } catch {
+      keyword = [];
+    }
+  }
   add(keyword.map((hit) => hit.chunkId));
 
   let vectorIds: string[] = [];
-  let semantic = false;
+  let semanticStatus: SemanticStatus = "off";
   if (deps.embedder && deps.vectors && version.chunks_embedded > 0) {
     const estimate = deps.embedder.estimateNeurons([question]);
-    if ((await neuronsRemaining(deps.db, deps.dailyNeuronBudget, deps.now())) >= estimate) {
+    if ((await neuronsRemaining(deps.db, deps.dailyNeuronBudget, deps.now())) < estimate) {
+      semanticStatus = "unavailable";
+    } else {
       try {
         const [vector] = await deps.embedder.embed([question], "query");
         await recordNeurons(deps.db, estimate, deps.now());
         const { matches } = await deps.vectors.query(vector, { topK: VECTOR_K, namespace: version.id, returnValues: false, returnMetadata: "none" });
         vectorIds = matches.filter((match) => match.score >= MIN_VECTOR_SCORE).map((match) => match.id);
-        semantic = true;
+        semanticStatus = vectorIds.length > 0 ? "used" : (await indexCatchingUp(deps.vectors, version)) ? "pending" : "no_matches";
       } catch {
-        // Keyword retrieval still works when the AI service or the vector
-        // index is unavailable; the response reports semantic: false.
-        semantic = false;
+        // AI or vector service unavailable: keyword evidence still answers.
+        semanticStatus = "unavailable";
       }
     }
   }
   add(vectorIds);
 
   const top = [...ranked.entries()].sort((a, b) => b[1] - a[1]).slice(0, EVIDENCE_LIMIT).map(([id]) => id);
-  if (top.length === 0) return { evidence: [], keywordHits: keyword.length, vectorHits: vectorIds.length, semantic };
+  const counts = { keywordHits: keyword.length, vectorHits: vectorIds.length, semanticStatus };
+  if (top.length === 0) return { evidence: [], ...counts };
 
   // D1 is authoritative: vectors from other or deleted versions cannot leak in.
   const { results } = await deps.db
-    .prepare(
-      `SELECT c.id AS chunkId, f.path AS path, c.start_line AS startLine, c.end_line AS endLine, c.text AS text
-       FROM chunks c JOIN files f ON f.version_id = c.version_id AND f.ordinal = c.ordinal
-       WHERE c.version_id = ? AND c.id IN (${top.map(() => "?").join(", ")})`,
-    )
+    .prepare(`SELECT ${CHUNK_COLUMNS} WHERE c.version_id = ? AND c.id IN (${top.map(() => "?").join(", ")})`)
     .bind(version.id, ...top)
-    .all<Omit<Evidence, "label">>();
+    .all<ChunkRow>();
   const byId = new Map(results.map((row) => [row.chunkId, row]));
-  const evidence = top
-    .map((id) => byId.get(id))
-    .filter((row): row is Omit<Evidence, "label"> => row !== undefined)
-    .map((row, i) => ({ ...row, label: `E${i + 1}` }));
-  return { evidence, keywordHits: keyword.length, vectorHits: vectorIds.length, semantic };
+  const hits = top.map((id) => byId.get(id)).filter((row): row is ChunkRow => row !== undefined);
+  const neighbors = await loadNeighbors(deps.db, version.id, hits.slice(0, NEIGHBOR_EXPANSIONS));
+  return { evidence: buildEvidenceBlocks(hits, neighbors), ...counts };
+}
+
+async function loadNeighbors(db: Database, versionId: string, hits: ChunkRow[]): Promise<Map<string, ChunkRow>> {
+  const neighbors = new Map<string, ChunkRow>();
+  if (hits.length === 0) return neighbors;
+  const clauses = hits.map(() => "(c.ordinal = ? AND c.seq IN (?, ?))").join(" OR ");
+  const params = hits.flatMap((hit) => [hit.ordinal, hit.seq - 1, hit.seq + 1]);
+  const { results } = await db
+    .prepare(`SELECT ${CHUNK_COLUMNS} WHERE c.version_id = ? AND (${clauses})`)
+    .bind(versionId, ...params)
+    .all<ChunkRow>();
+  for (const row of results) neighbors.set(`${row.ordinal}:${row.seq}`, row);
+  return neighbors;
+}
+
+/**
+ * Turns ranked hits into evidence blocks. The top hits are widened with the
+ * chunk after, then before, while the block stays within BLOCK_CHARS. Blocks
+ * are whole contiguous lines, so a cited range is exactly what the model saw.
+ */
+export function buildEvidenceBlocks(hits: ChunkRow[], neighbors: Map<string, ChunkRow>): Evidence[] {
+  const used = new Set<string>();
+  const evidence: Evidence[] = [];
+  let total = 0;
+  hits.forEach((hit, rank) => {
+    const key = (row: ChunkRow) => `${row.ordinal}:${row.seq}`;
+    if (used.has(key(hit)) || (evidence.length > 0 && total >= TOTAL_EVIDENCE_CHARS)) return;
+    let block = [hit];
+    let size = hit.text.length;
+    if (rank < NEIGHBOR_EXPANSIONS) {
+      for (const offset of [1, -1]) {
+        const next = neighbors.get(`${hit.ordinal}:${hit.seq + offset}`);
+        if (next && !used.has(key(next)) && size + next.text.length + 1 <= BLOCK_CHARS) {
+          block = offset === 1 ? [...block, next] : [next, ...block];
+          size += next.text.length + 1;
+        }
+      }
+    }
+    for (const row of block) used.add(key(row));
+    const text = block.map((row) => row.text).join("\n");
+    total += text.length;
+    evidence.push({
+      label: `E${evidence.length + 1}`,
+      chunkId: hit.chunkId,
+      path: hit.path,
+      startLine: block[0].startLine,
+      endLine: block[block.length - 1].endLine,
+      // Only a single oversized line can exceed the cap; its range is one line.
+      text: text.length > BLOCK_CHARS && block.length === 1 ? text.slice(0, BLOCK_CHARS) : text,
+    });
+  });
+  return evidence;
+}
+
+/** True when vectors were written after the index last caught up (Vectorize indexes asynchronously). */
+async function indexCatchingUp(vectors: VectorizeBinding, version: VersionRow): Promise<boolean> {
+  if (!vectors.describe || !version.vectors_upserted_at) return false;
+  try {
+    const info = await vectors.describe();
+    const raw = info.processedUpToDatetime;
+    let processed = typeof raw === "number" ? raw : Date.parse(String(raw ?? ""));
+    if (processed > 0 && processed < 1e12) processed *= 1000; // seconds → ms
+    return Number.isFinite(processed) && processed < version.vectors_upserted_at;
+  } catch {
+    return false;
+  }
 }
 
 export function buildMessages(question: string, evidence: Evidence[], nonce: string): ChatMessage[] {
@@ -95,7 +184,7 @@ export function buildMessages(question: string, evidence: Evidence[], nonce: str
   const blocks = evidence
     .map((item) => {
       // A block cannot close itself early: the nonce is random per request.
-      const text = item.text.slice(0, EVIDENCE_CHARS).replaceAll(`</${tag}`, `<\\/${tag}`);
+      const text = item.text.replaceAll(`</${tag}`, `<\\/${tag}`);
       const path = item.path.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
       return `<${tag} label="${item.label}" path="${path}" lines="${item.startLine}-${item.endLine}">\n${text}\n</${tag}>`;
     })
@@ -178,7 +267,12 @@ export function commitUrl(
 
 export async function answerQuestion(deps: AskDeps, repo: RepoRow, version: VersionRow, question: string): Promise<AskResponse> {
   const retrieval = await retrieveEvidence(deps, version, question);
-  const meta = { keywordHits: retrieval.keywordHits, vectorHits: retrieval.vectorHits, semantic: retrieval.semantic };
+  const meta = {
+    keywordHits: retrieval.keywordHits,
+    vectorHits: retrieval.vectorHits,
+    semantic: retrieval.semanticStatus === "used",
+    semanticStatus: retrieval.semanticStatus,
+  };
   const passages = (items: Evidence[]): Citation[] =>
     items.slice(0, 5).map((item, i) => ({
       number: i + 1,

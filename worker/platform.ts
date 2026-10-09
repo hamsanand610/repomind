@@ -36,6 +36,8 @@ export interface VectorizeBinding {
     options: { topK: number; namespace?: string; returnValues?: boolean; returnMetadata?: boolean | "none" | "indexed" | "all" },
   ): Promise<{ matches: Array<{ id: string; score: number }> }>;
   deleteByIds(ids: string[]): Promise<unknown>;
+  /** Index progress; used to tell "no matches" from "not indexed yet". */
+  describe?(): Promise<{ vectorCount?: number; processedUpToDatetime?: number | string }>;
 }
 
 export interface AppEnv {
