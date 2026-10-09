@@ -35,7 +35,7 @@ const VECTOR_K = 12;
 const EVIDENCE_LIMIT = 8;
 const EVIDENCE_CHARS = 2_400;
 const MIN_VECTOR_SCORE = 0.3;
-const MAX_ANSWER_TOKENS = 700;
+const MAX_ANSWER_TOKENS = 1_000;
 const RRF_K = 60;
 
 export async function retrieveEvidence(
@@ -61,9 +61,10 @@ export async function retrieveEvidence(
         const { matches } = await deps.vectors.query(vector, { topK: VECTOR_K, namespace: version.id, returnValues: false, returnMetadata: "none" });
         vectorIds = matches.filter((match) => match.score >= MIN_VECTOR_SCORE).map((match) => match.id);
         semantic = true;
-      } catch (error) {
-        // Keyword retrieval still works when semantic retrieval is unavailable.
-        if (!(error instanceof AiQuotaError || error instanceof AiBusyError)) throw error;
+      } catch {
+        // Keyword retrieval still works when the AI service or the vector
+        // index is unavailable; the response reports semantic: false.
+        semantic = false;
       }
     }
   }
@@ -216,6 +217,22 @@ export async function answerQuestion(deps: AskDeps, repo: RepoRow, version: Vers
   await recordNeurons(deps.db, result.usage ? deps.chat.neuronsForUsage(result.usage) : estimate, deps.now());
 
   const validated = validateAnswer(result.text, retrieval.evidence, repo, version.commit_sha);
+  // Metadata only: never log the question, evidence or answer text.
+  console.log(
+    JSON.stringify({
+      event: "ask_result",
+      model: deps.chat.model,
+      evidence: retrieval.evidence.length,
+      textLength: result.text.length,
+      labelMarkers: (result.text.match(/E\d+/g) ?? []).length,
+      bracketedLabels: (result.text.match(/\[\s*E\d+/g) ?? []).length,
+      startsInsufficient: /^\W*INSUFFICIENT_EVIDENCE/.test(result.text.trim()),
+      status: validated.status,
+      validCitations: validated.citations.length,
+      invalidCitations: validated.invalidCitations,
+      usage: result.usage,
+    }),
+  );
   if (validated.status === "insufficient_evidence") {
     return {
       status: "insufficient_evidence",

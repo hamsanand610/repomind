@@ -1,4 +1,15 @@
-import type { ApiErrorBody, HealthResponse } from '../../shared/api.ts'
+import type {
+  ApiErrorBody,
+  AskResponse,
+  FileContentResponse,
+  FileListResponse,
+  HealthResponse,
+  RepoListResponse,
+  RepoSummary,
+  SearchResponse,
+  SessionResponse,
+} from '../../shared/api.ts'
+import type { Discovery } from '../../shared/discovery.ts'
 
 /**
  * A failed API call with a message that is safe to render. Server messages are
@@ -18,58 +29,67 @@ export class ApiError extends Error {
   }
 }
 
-export function fetchHealth(signal?: AbortSignal): Promise<HealthResponse> {
-  return apiGet<HealthResponse>('/api/health', signal)
-}
+/** Fired when any call gets 401, so the app can return to the sign-in screen. */
+export const SESSION_EXPIRED_EVENT = 'repomind:session-expired'
 
-async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   let response: Response
   try {
-    response = await fetch(path, { headers: { Accept: 'application/json' }, signal })
+    response = await fetch(path, {
+      method,
+      headers: body === undefined ? { Accept: 'application/json' } : { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: 'same-origin',
+      signal,
+    })
   } catch (error) {
     if (signal?.aborted) throw error
-    throw new ApiError(
-      0,
-      'network_error',
-      "Couldn't reach the RepoMind server. Check your connection and try again.",
-      null,
-    )
+    throw new ApiError(0, 'network_error', "Couldn't reach the RepoMind server. Check your connection and try again.", null)
   }
+  if (response.status === 401) window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT))
   return readResponse<T>(response)
 }
 
 async function readResponse<T>(response: Response): Promise<T> {
   const requestId = response.headers.get('X-Request-Id')
-  const unexpected = new ApiError(
-    response.status,
-    'unexpected_response',
-    'The server sent an unexpected response. Try again in a moment.',
-    requestId,
-  )
-
+  const unexpected = new ApiError(response.status, 'unexpected_response', 'The server sent an unexpected response. Try again in a moment.', requestId)
   if (!(response.headers.get('Content-Type') ?? '').startsWith('application/json')) throw unexpected
-
   let body: unknown
   try {
     body = await response.json()
   } catch {
     throw unexpected
   }
-
   if (response.ok) return body as T
-  if (isApiErrorBody(body)) {
-    throw new ApiError(response.status, body.error.code, body.error.message, body.error.requestId)
-  }
+  if (isApiErrorBody(body)) throw new ApiError(response.status, body.error.code, body.error.message, body.error.requestId)
   throw unexpected
 }
 
 function isApiErrorBody(value: unknown): value is ApiErrorBody {
   if (typeof value !== 'object' || value === null || !('error' in value)) return false
   const error = (value as { error: unknown }).error
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    typeof (error as Record<string, unknown>).code === 'string' &&
-    typeof (error as Record<string, unknown>).message === 'string'
-  )
+  return typeof error === 'object' && error !== null && typeof (error as Record<string, unknown>).message === 'string'
+}
+
+const repoPath = (id: string) => `/api/repos/${encodeURIComponent(id)}`
+
+export const api = {
+  health: (signal?: AbortSignal) => request<HealthResponse>('GET', '/api/health', undefined, signal),
+  session: () => request<SessionResponse>('GET', '/api/auth/session'),
+  login: (code: string) => request<SessionResponse>('POST', '/api/auth/login', { code }),
+  logout: () => request<SessionResponse>('POST', '/api/auth/logout', {}),
+  listRepos: () => request<RepoListResponse>('GET', '/api/repos'),
+  addRepo: (url: string, discovery: Discovery) => request<RepoSummary>('POST', '/api/repos', { url, discovery }),
+  getRepo: (id: string) => request<RepoSummary>('GET', repoPath(id)),
+  step: (id: string) => request<{ outcome: { kind: string }; repo: RepoSummary }>('POST', `${repoPath(id)}/step`, {}),
+  reindex: (id: string, discovery: Discovery) => request<RepoSummary>('POST', `${repoPath(id)}/reindex`, { discovery }),
+  deleteRepo: (id: string) => request<{ deleted: boolean }>('DELETE', repoPath(id)),
+  files: (id: string) => request<FileListResponse>('GET', `${repoPath(id)}/files`),
+  file: (id: string, path: string) => request<FileContentResponse>('GET', `${repoPath(id)}/file?path=${encodeURIComponent(path)}`),
+  search: (id: string, q: string) => request<SearchResponse>('GET', `${repoPath(id)}/search?q=${encodeURIComponent(q)}`),
+  ask: (id: string, question: string) => request<AskResponse>('POST', `${repoPath(id)}/ask`, { question }),
+}
+
+export function errorMessage(error: unknown): string {
+  return error instanceof ApiError || error instanceof Error ? error.message : 'Something unexpected happened. Try again.'
 }

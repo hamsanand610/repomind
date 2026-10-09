@@ -2,6 +2,7 @@ import type { AdmissionReport } from "../shared/ingest/admission.ts";
 import { DEFAULT_ADMISSION_LIMITS, admitRepository } from "../shared/ingest/admission.ts";
 import { INGEST_LIMITS } from "../shared/ingest/limits.ts";
 import { type ChunkRecord, type IndexedFile, type SkippedFile, processFile } from "../shared/ingest/pipeline.ts";
+import type { Discovery } from "../shared/discovery.ts";
 import { AiBusyError, AiQuotaError, type EmbeddingProvider } from "./ai.ts";
 import { GitHubError, type GitHubClient } from "./github.ts";
 import { HttpError } from "./http.ts";
@@ -100,6 +101,7 @@ export async function createRepository(
   deps: IngestDeps,
   ownerId: string,
   locator: { owner: string; repo: string; ref: string | null },
+  discovery: Discovery | null = null,
 ): Promise<{ repoId: string; existing: boolean }> {
   const { db } = deps;
   const requestedRef = locator.ref ?? "";
@@ -114,7 +116,9 @@ export async function createRepository(
     throw new HttpError(409, "repo_limit", `You can index up to ${deps.config.maxReposPerOwner} repositories. Delete one to add another.`);
   }
 
-  const info = await withGitHubErrors(() => deps.github.getRepo(locator.owner, locator.repo));
+  const info = discovery
+    ? { owner: discovery.owner, repo: discovery.repo, defaultBranch: discovery.defaultBranch }
+    : await withGitHubErrors(() => deps.github.getRepo(locator.owner, locator.repo));
   const now = deps.now();
   const repoId = randomId("r");
   await db
@@ -125,19 +129,40 @@ export async function createRepository(
     .bind(repoId, ownerId, info.owner, info.repo, requestedRef, info.defaultBranch, now, now)
     .run();
   const repo = await getRepoForOwner(db, ownerId, repoId);
-  await startVersion(deps, repo, info.defaultBranch);
+  await startVersion(deps, repo, { defaultBranch: info.defaultBranch, discovery });
   return { repoId, existing: false };
 }
 
-/** Pins the current commit, plans the files and opens a new version. */
-export async function startVersion(deps: IngestDeps, repo: RepoRow, defaultBranch?: string): Promise<string> {
+/**
+ * Pins the commit, plans the files and opens a new version. Uses the
+ * caller's discovery (validated) when given, otherwise the GitHub API.
+ */
+export async function startVersion(
+  deps: IngestDeps,
+  repo: RepoRow,
+  options: { defaultBranch?: string; discovery?: Discovery | null } = {},
+): Promise<string> {
   const { db, github, config } = deps;
   const latest = await getVersion(db, repo.latest_version_id);
   if (latest?.status === "indexing") throw new HttpError(409, "conflict", "This repository is already being indexed.");
 
-  const ref = repo.requested_ref || defaultBranch || repo.default_branch || (await withGitHubErrors(() => github.getRepo(repo.gh_owner, repo.gh_repo))).defaultBranch;
-  const sha = await withGitHubErrors(() => github.resolveCommit(repo.gh_owner, repo.gh_repo, ref));
-  const tree = await withGitHubErrors(() => github.getTree(repo.gh_owner, repo.gh_repo, sha));
+  const { discovery } = options;
+  let ref: string;
+  let sha: string;
+  let tree: { files: Array<{ path: string; size: number }>; entries: number; truncated: boolean };
+  if (discovery) {
+    if (repo.requested_ref && discovery.ref !== repo.requested_ref) {
+      throw new HttpError(400, "invalid_request", "The discovered branch does not match this repository's branch.");
+    }
+    ref = discovery.ref;
+    sha = discovery.commitSha;
+    tree = { files: discovery.files.map(([path, size]) => ({ path, size })), entries: discovery.treeEntries, truncated: discovery.truncated };
+  } else {
+    ref = repo.requested_ref || options.defaultBranch || repo.default_branch || (await withGitHubErrors(() => github.getRepo(repo.gh_owner, repo.gh_repo))).defaultBranch;
+    sha = await withGitHubErrors(() => github.resolveCommit(repo.gh_owner, repo.gh_repo, ref));
+    tree = await withGitHubErrors(() => github.getTree(repo.gh_owner, repo.gh_repo, sha));
+  }
+  const defaultBranch = discovery?.defaultBranch ?? options.defaultBranch;
 
   const limits = { ...DEFAULT_ADMISSION_LIMITS, maxChunksPerRepo: config.maxChunksPerRepo };
   let { report, admitted } = admitRepository(tree.files, tree.entries, limits);
@@ -223,6 +248,16 @@ async function indexFilesStep(deps: IngestDeps, version: VersionRow): Promise<St
   // A rate limit pauses the whole version rather than skipping files.
   for (const result of downloads) {
     if (result.status === "rejected" && result.reason instanceof GitHubError && result.reason.code === "rate_limited") throw result.reason;
+  }
+  // Nothing downloadable at the very start means a private repository, a bad
+  // commit or a forged listing: fail clearly instead of indexing nothing.
+  if (cursor === 0 && downloads.every((result) => result.status === "fulfilled" && result.value === null)) {
+    const now = deps.now();
+    await db
+      .prepare("UPDATE versions SET status = 'failed', error_code = 'download_failed', error_message = ?, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'indexing'")
+      .bind("No files could be downloaded at this commit. The repository may be private, or the commit no longer exists.", now, now, version.id)
+      .run();
+    return { kind: "idle" };
   }
 
   const budget = { remaining: deps.config.maxChunksPerRepo - version.chunks_total };
@@ -365,7 +400,11 @@ async function embedStep(deps: IngestDeps, version: VersionRow, embedder: Embedd
     return pauseEmbedding(deps, version, busy ? 30_000 : 120_000, busy ? "The AI service is busy; retrying shortly." : "Embedding failed; retrying shortly.");
   }
   await recordNeurons(db, estimate, now);
-  await vectors.upsert(results.map((row, i) => ({ id: row.id, values: embeddings[i], namespace: version.id })));
+  try {
+    await vectors.upsert(results.map((row, i) => ({ id: row.id, values: embeddings[i], namespace: version.id })));
+  } catch {
+    return pauseEmbedding(deps, version, 120_000, "The vector index is temporarily unavailable; semantic search will retry shortly. Keyword search works now.");
+  }
 
   const rowids = results.map((row) => row.rowid);
   await db.batch([

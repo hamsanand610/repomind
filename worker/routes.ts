@@ -10,6 +10,7 @@ import type {
   ValidateRepoUrlResponse,
   VersionSummary,
 } from "../shared/api.ts";
+import { type Discovery, validateDiscovery } from "../shared/discovery.ts";
 import { describeGitHubUrlError, parseGitHubRepoUrl } from "../shared/github-url.ts";
 import { answerQuestion } from "./ask.ts";
 import {
@@ -39,6 +40,8 @@ import { commitUrl } from "./ask.ts";
 import { ftsQuery, listFiles, readFile, searchChunks, searchPaths } from "./search.ts";
 
 const SMALL_BODY = 4 * 1024;
+/** A discovery listing of up to 2,000 [path, size] pairs. */
+const DISCOVERY_BODY = 1024 * 1024;
 
 export const apiRoutes: readonly Route[] = [
   { method: "GET", pattern: "/api/health", handler: ({ requestId }) => jsonResponse({ status: "ok", service: "repomind" } satisfies HealthResponse, 200, requestId) },
@@ -176,17 +179,28 @@ async function listRepos(context: RequestContext, ownerId: string): Promise<Resp
   return jsonResponse({ repos, limit: context.services.config.maxReposPerOwner } satisfies RepoListResponse, 200, context.requestId);
 }
 
+function readDiscovery(body: Record<string, unknown>, expected: { owner: string; repo: string }): Discovery | null {
+  if (body.discovery === undefined) return null;
+  const discovery = validateDiscovery(body.discovery, expected);
+  if (!discovery) throw new HttpError(400, "invalid_request", "The repository listing is malformed or too large.");
+  return discovery;
+}
+
 async function addRepo(context: RequestContext, ownerId: string): Promise<Response> {
-  const body = await readJsonBody(context.request, SMALL_BODY);
+  const body = await readJsonBody(context.request, DISCOVERY_BODY);
   if (!isRecord(body) || typeof body.url !== "string") {
     throw new HttpError(400, "invalid_request", 'Expected a JSON object with a string "url" field.');
   }
   const parsed = parseGitHubRepoUrl(body.url);
   if (!parsed.ok) throw new HttpError(400, "invalid_github_url", describeGitHubUrlError(parsed.reason), { reason: parsed.reason });
+  const discovery = readDiscovery(body, parsed.value);
+  if (discovery && parsed.value.ref && discovery.ref !== parsed.value.ref) {
+    throw new HttpError(400, "invalid_request", "The discovered branch does not match the URL.");
+  }
 
   const { db, now } = context.services;
   await enforceLimit(db, `start:${ownerId}`, dayBucket(now()), 20, "You have started 20 indexing jobs today. Try again tomorrow.");
-  const { repoId, existing } = await createRepository(context.services, ownerId, parsed.value);
+  const { repoId, existing } = await createRepository(context.services, ownerId, parsed.value, discovery);
   const repo = await getRepoForOwner(db, ownerId, repoId);
   return jsonResponse(await repoSummary(context, repo), existing ? 200 : 201, context.requestId);
 }
@@ -204,8 +218,10 @@ async function removeRepo(context: RequestContext, ownerId: string): Promise<Res
 async function reindexRepo(context: RequestContext, ownerId: string): Promise<Response> {
   const { db, now } = context.services;
   const repo = await getRepoForOwner(db, ownerId, context.params.id);
+  const body = await readJsonBody(context.request, DISCOVERY_BODY);
+  const discovery = isRecord(body) ? readDiscovery(body, { owner: repo.gh_owner, repo: repo.gh_repo }) : null;
   await enforceLimit(db, `start:${ownerId}`, dayBucket(now()), 20, "You have started 20 indexing jobs today. Try again tomorrow.");
-  await startVersion(context.services, repo);
+  await startVersion(context.services, repo, { discovery });
   return jsonResponse(await repoSummary(context, await getRepoForOwner(db, ownerId, repo.id)), 202, context.requestId);
 }
 

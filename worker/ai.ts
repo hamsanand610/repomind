@@ -101,11 +101,22 @@ export function truncateAndNormalize(vector: number[], dims: number): number[] {
   return head.map((value) => value / norm);
 }
 
+/**
+ * Reasoning ("thinking") models can spend the whole token budget on hidden
+ * reasoning and return empty content (observed live with Gemma 4). Grounded
+ * answers need no long reasoning, so it is switched off where supported.
+ */
+function modelOptions(model: string): Record<string, unknown> {
+  if (/gemma-4|qwen3|glm-4/.test(model)) return { chat_template_kwargs: { enable_thinking: false } };
+  if (/gpt-oss/.test(model)) return { reasoning_effort: "low" };
+  return {};
+}
+
 export function createWorkersAiChat(ai: AiBinding, model: string): ChatProvider {
   return {
     model,
     async complete(messages, options) {
-      const output = await runModel(ai, model, { messages, max_tokens: options.maxTokens, temperature: 0.1 });
+      const output = await runModel(ai, model, { messages, max_tokens: options.maxTokens, temperature: 0.1, ...modelOptions(model) });
       return { text: extractText(output), usage: extractUsage(output) };
     },
     estimateNeurons(promptChars, maxTokens) {

@@ -191,10 +191,46 @@ describe("repository flow", () => {
     expect(vectors.store.size).toBe(0);
   });
 
+  it("indexes from a browser-supplied discovery without calling the GitHub API, and fails clearly on a forged one", async () => {
+    const cookie = await login(CODE_A);
+    const discovery = {
+      owner: "acme", repo: "widget", defaultBranch: "main", ref: "main", commitSha: REPO.sha, treeEntries: 7, truncated: false,
+      files: [["README.md", 70], ["src/auth.ts", 400], ["src/db.ts", 90], ["package.json", 41]],
+    };
+    const created = await call("/api/repos", { method: "POST", cookie, body: JSON.stringify({ url: "https://github.com/acme/widget", discovery }) });
+    expect(created.status).toBe(201);
+    const done = await indexToCompletion(cookie, ((await created.json()) as RepoSummary).id);
+    expect(done.active?.status).toBe("ready");
+    expect(fetchLog.some((entry) => entry.url.startsWith("https://api.github.com/"))).toBe(false);
+
+    // Paths that do not exist at the commit: nothing downloadable, so the version fails clearly.
+    const forged = { ...discovery, repo: "widget", files: [["src/invented.ts", 10]] };
+    await call(`/api/repos/${done.id}/reindex`, { method: "POST", cookie, body: JSON.stringify({ discovery: forged }) });
+    const after = await indexToCompletion(cookie, done.id);
+    expect(after.latest?.status).toBe("failed");
+    expect(after.latest?.errorCode).toBe("download_failed");
+    expect(after.active?.id).toBe(done.active?.id); // the previous good index stays active
+
+    const bad = await call("/api/repos", { method: "POST", cookie, body: JSON.stringify({ url: "https://github.com/acme/other", discovery }) });
+    expect(bad.status).toBe(400); // listing for a different repository
+  });
+
   it("rejects private or missing repositories and non-GitHub URLs", async () => {
     const cookie = await login(CODE_A);
     expect((await call("/api/repos", { method: "POST", cookie, body: JSON.stringify({ url: "https://github.com/acme/secret" }) })).status).toBe(404);
     expect((await call("/api/repos", { method: "POST", cookie, body: JSON.stringify({ url: "https://evil.example/acme/widget" }) })).status).toBe(400);
+  });
+
+  it("pauses semantic indexing gracefully when the vector index fails, without server errors", async () => {
+    env = { ...env, VECTORIZE: { ...fakeVectorize(), upsert: async () => { throw new Error("vectorize unavailable"); }, query: async () => { throw new Error("vectorize unavailable"); } } };
+    const cookie = await login(CODE_A);
+    const repo = (await (await call("/api/repos", { method: "POST", cookie, body: JSON.stringify({ url: "https://github.com/acme/widget" }) })).json()) as RepoSummary;
+    const done = await indexToCompletion(cookie, repo.id);
+    expect(done.active?.status).toBe("ready");
+    expect(done.active?.embeddingNote).toMatch(/vector index/);
+    const answer = await call(`/api/repos/${repo.id}/ask`, { method: "POST", cookie, body: JSON.stringify({ question: "How are tokens verified?" }) });
+    expect(answer.status).toBe(200);
+    expect(((await answer.json()) as AskResponse).retrieval.semantic).toBe(false);
   });
 
   it("keeps keyword search and returns passages when AI is unavailable", async () => {
