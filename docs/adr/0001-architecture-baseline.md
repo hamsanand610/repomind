@@ -124,12 +124,17 @@ ZIP upload is in scope but follows the GitHub path (M6) and is extracted in the 
 
 | ID | Decision | Status | Date |
 |---|---|---|---|
-| D1 | Single Worker + Static Assets + D1 + Vectorize + Workers AI + Queues | Accepted | 2026-10-09 |
+| D1 | Single Worker + Static Assets + D1 + Vectorize + Workers AI (Queues replaced by D11) | Accepted, implemented | 2026-10-09 |
 | D2 | `run_worker_first` for `/api` and `/api/*` | Accepted, implemented and tested | 2026-10-09 |
 | D3 | Read-only boundary; no code execution | Accepted | 2026-10-09 |
 | D4 | Free-tier policy; no paid fallback | Accepted | 2026-10-09 |
-| D5 | Citation contract `[E#]`, built server-side | Accepted (implementation in M4) | 2026-10-09 |
-| D6 | Authentication via invite codes (Access needs payment details) | **Pending owner decision** | 2026-10-09 |
+| D5 | Citation contract `[E#]`, built server-side | Accepted, implemented and tested live | 2026-10-09 |
+| D6 | Invite codes + HMAC-signed, expiring, HttpOnly/SameSite=Strict sessions | Accepted by owner, implemented | 2026-10-09 |
 | D7 | Vitest (Node) + workerd integration via `vite preview` | Accepted | 2026-10-09 |
 | D8 | ZIP extracted in the browser, re-validated on the server | Accepted (M6) | 2026-10-09 |
 | D9 | Design tokens; light, warm theme | Accepted, implemented | 2026-10-09 |
+| D10 | Repository discovery (commit pin + tree) runs in the browser; the server re-validates it and alone downloads content from raw.githubusercontent.com. Unauthenticated GitHub API calls from shared Worker IPs were rate-limited on the first live request. A server-side path remains if a GITHUB_TOKEN secret is added. | Implemented, verified live | 2026-10-09 |
+| D11 | Ingestion as resumable, idempotent D1-backed steps driven by the open page, plus a once-a-minute cron trigger. Queues are not used, because no Queue-consumer CPU measurement exists for the Free plan. | Implemented, verified live | 2026-10-09 |
+| D12 | Embeddings: @cf/qwen/qwen3-embedding-0.6b, stored at 512 dims (Matryoshka truncation, re-normalised). Answers: @cf/google/gemma-4-26b-a4b-it with hidden reasoning disabled. Both are configurable vars. | Implemented; retrieval evaluation still pending | 2026-10-09 |
+| D13 | Capacity-based admission (ADR 0002) applied automatically, with partial indexing explained in the UI and no confirmation step for the MVP | Implemented | 2026-10-09 |
+| D14 | Rate limits, login throttling and the daily Neuron ledger live in D1 counters, because Rate Limiting binding availability on Free is undocumented | Implemented | 2026-10-09 |
