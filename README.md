@@ -10,7 +10,7 @@ It never modifies, commits to or executes the repositories it reads.
 
 - React 19, TypeScript and Vite 8, served as Cloudflare Workers Static Assets.
 - One Cloudflare Worker for the API under `/api/*`.
-- Planned: D1, Vectorize, Workers AI and Queues, all on the Workers **Free** plan.
+- D1 for metadata, source chunks and the FTS5 keyword index; Vectorize for semantic search; Workers AI for embeddings and answers; a once-a-minute cron trigger for background indexing. Everything runs on the Workers **Free** plan.
 
 See [ADR 0001](docs/adr/0001-architecture-baseline.md) for the decisions and [docs/free-tier.md](docs/free-tier.md) for the verified limits.
 
