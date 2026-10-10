@@ -64,7 +64,8 @@ export function fakeEmbedding(text: string): number[] {
 }
 
 export interface FakeAiOptions {
-  answer?: (question: string, labels: string[]) => string;
+  /** `turn` is 0 for the first completion and 1 for a retry. */
+  answer?: (question: string, labels: string[], turn: number) => string;
   failWith?: string;
 }
 
@@ -85,10 +86,12 @@ export function fakeAi(options: FakeAiOptions = {}): AiBinding & { calls: Array<
       calls.push({ model, kind: "chat" });
       const messages = inputs.messages as Array<{ role: string; content: string }>;
       prompts.push(messages.map((message) => message.content).join("\n"));
-      const user = messages[messages.length - 1].content;
+      // The question and evidence are in the first user message; a retry appends turns after it.
+      const user = messages.find((message) => message.role === "user" && message.content.startsWith("Question: "))?.content ?? messages[messages.length - 1].content;
       const question = /^Question: (.*)$/m.exec(user)?.[1] ?? "";
       const labels = [...user.matchAll(/label="(E\d+)"/g)].map((match) => match[1]);
-      const content = options.answer ? options.answer(question, labels) : `Answer citing ${labels[0]} [${labels[0]}].`;
+      const turn = messages.filter((message) => message.role === "assistant").length;
+      const content = options.answer ? options.answer(question, labels, turn) : `Answer citing ${labels[0]} [${labels[0]}].`;
       return {
         id: "chatcmpl-test",
         object: "chat.completion",

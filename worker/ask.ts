@@ -231,6 +231,12 @@ async function indexCatchingUp(vectors: VectorizeBinding, version: VersionRow): 
   }
 }
 
+/** Repeated after the evidence, where the model reads it last. */
+const CITATION_REMINDER = "Answer the question above. Put the label of the supporting block after each claim, like [E1]. If the evidence is not enough, reply with exactly: INSUFFICIENT_EVIDENCE";
+/** Sent once when an answer arrives without any evidence label; uncited text is never shown. */
+const CITATION_RETRY =
+  "Your answer cites no evidence labels, so it cannot be shown. Rewrite it using only the evidence blocks, with the supporting label after each claim, like [E1]. If the evidence is not enough, reply with exactly: INSUFFICIENT_EVIDENCE";
+
 export interface PromptContext {
   /** "owner/name" from the repository record; GitHub names are limited to [A-Za-z0-9._-]. */
   repository: string;
@@ -266,7 +272,7 @@ export function buildMessages(question: string, evidence: Evidence[], nonce: str
         "Be concise: a short paragraph or a short list. Use Markdown code spans for identifiers and file names.",
       ].join("\n"),
     },
-    { role: "user", content: `Question: ${question}\n\nEvidence:\n\n${blocks}` },
+    { role: "user", content: `Question: ${question}\n\nEvidence:\n\n${blocks}\n\n${CITATION_REMINDER}` },
   ];
 }
 
@@ -314,6 +320,12 @@ export function validateAnswer(
     };
   });
   return { status: "answered", answer, citations, invalidCitations: invalid };
+}
+
+/** An answer with text but no [E#] label anywhere (not an abstention, and not a fake label). */
+export function isUncited(raw: string): boolean {
+  const text = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  return text.length > 0 && !/^\W*INSUFFICIENT_EVIDENCE\b/.test(text) && !/\[\s*E\d+/.test(text);
 }
 
 export function commitUrl(
@@ -374,7 +386,26 @@ export async function answerQuestion(deps: AskDeps, repo: RepoRow, version: Vers
   }
   await recordNeurons(deps.db, result.usage ? deps.chat.neuronsForUsage(result.usage) : estimate, deps.now());
 
-  const validated = validateAnswer(result.text, retrieval.evidence, repo, version.commit_sha);
+  let validated = validateAnswer(result.text, retrieval.evidence, repo, version.commit_sha);
+  // A substantive answer with no evidence label at all is a format slip, not a
+  // lack of evidence: ask once for the cited version (within the AI budget).
+  const firstUncited = validated.status === "insufficient_evidence" && isUncited(result.text);
+  let retried = false;
+  if (firstUncited) {
+    const retryMessages: ChatMessage[] = [...messages, { role: "assistant", content: result.text }, { role: "user", content: CITATION_RETRY }];
+    const retryEstimate = deps.chat.estimateNeurons(promptChars + result.text.length + CITATION_RETRY.length, MAX_ANSWER_TOKENS);
+    if ((await neuronsRemaining(deps.db, deps.dailyNeuronBudget, deps.now())) >= retryEstimate) {
+      try {
+        const second = await deps.chat.complete(retryMessages, { maxTokens: MAX_ANSWER_TOKENS });
+        await recordNeurons(deps.db, second.usage ? deps.chat.neuronsForUsage(second.usage) : retryEstimate, deps.now());
+        result = second;
+        validated = validateAnswer(second.text, retrieval.evidence, repo, version.commit_sha);
+        retried = true;
+      } catch (error) {
+        if (!(error instanceof AiQuotaError || error instanceof AiBusyError)) throw error;
+      }
+    }
+  }
   // Metadata only: never log the question, evidence or answer text. Chunk ids
   // ("<version>:<file>:<seq>") make the repository/version scope auditable.
   console.log(
@@ -395,6 +426,8 @@ export async function answerQuestion(deps: AskDeps, repo: RepoRow, version: Vers
       status: validated.status,
       validCitations: validated.citations.length,
       invalidCitations: validated.invalidCitations,
+      firstUncited,
+      retried,
       usage: result.usage,
     }),
   );

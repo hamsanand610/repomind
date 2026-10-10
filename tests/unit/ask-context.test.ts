@@ -163,6 +163,54 @@ describe("broad questions on a portfolio that showcases other projects (Portfoli
   });
 });
 
+describe("answers that forget their citations (spf13/cobra regression)", () => {
+  const chatCalls = () => ai.calls.filter((call) => call.kind === "chat").length;
+
+  it("asks once more when a substantive answer has no evidence label, and shows the cited version", async () => {
+    ai = fakeAi({ answer: (_q, labels, turn) => (turn === 0 ? "Cobra is a library for creating CLI applications." : `Cobra is a library for CLI applications [${labels[0]}].`) });
+    env = { ...env, AI: ai };
+    const cookie = await login();
+    const repo = await addAndIndex(cookie, MARS);
+    const before = chatCalls();
+    const answer = await ask(cookie, repo.id, "What does this project do?");
+    expect(answer.status).toBe("answered");
+    expect(answer.citations[0].path).toBe("README.md");
+    expect(chatCalls() - before).toBe(2);
+    expect(ai.prompts.at(-1)).toContain("cites no evidence labels");
+  });
+
+  it("still never shows uncited text when the retry is uncited too", async () => {
+    ai = fakeAi({ answer: () => "An answer with no labels at all." });
+    env = { ...env, AI: ai };
+    const cookie = await login();
+    const repo = await addAndIndex(cookie, MARS);
+    const before = chatCalls();
+    const answer = await ask(cookie, repo.id, "What does this project do?");
+    expect(answer).toMatchObject({ status: "insufficient_evidence", answer: null, citations: [] });
+    expect(chatCalls() - before).toBe(2);
+  });
+
+  it.each([
+    ["an abstention", "INSUFFICIENT_EVIDENCE"],
+    ["an answer citing only a label the server never supplied", "The admin password is in the config [E99]."],
+  ])("does not retry %s", async (_name, reply) => {
+    ai = fakeAi({ answer: () => reply });
+    env = { ...env, AI: ai };
+    const cookie = await login();
+    const repo = await addAndIndex(cookie, MARS);
+    const before = chatCalls();
+    expect((await ask(cookie, repo.id, "What does this project do?")).status).toBe("insufficient_evidence");
+    expect(chatCalls() - before).toBe(1);
+  });
+
+  it("repeats the citation rule after the evidence", async () => {
+    const cookie = await login();
+    const repo = await addAndIndex(cookie, MARS);
+    await ask(cookie, repo.id, "What does this project do?");
+    expect((ai.prompts.at(-1) ?? "").trimEnd()).toMatch(/like \[E1\]\. If the evidence is not enough, reply with exactly: INSUFFICIENT_EVIDENCE$/);
+  });
+});
+
 describe("repository and version isolation", () => {
   it("never uses another repository's chunks, even when the vector index ignores namespaces", async () => {
     env = { ...env, VECTORIZE: fakeVectorize({ ignoreNamespace: true }) };
