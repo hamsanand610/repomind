@@ -360,3 +360,56 @@ Each fix has a regression test (`tests/unit/code-intel.test.ts`, `code-intel-flo
 - **Partial indexes:** only indexed files are analysed. A definition in a file left out of a partial index is not found, and the UI says this may be the reason.
 - **Aliases:** `tsconfig.json` `paths` and bundler aliases other than `@/`, `~/` and `@site/` are not read; such imports show as unresolved.
 - **Sample size:** seven repositories; definitions and imports are evaluated on JavaScript, TypeScript, Python, Go and HTML only.
+
+# ZIP upload evaluation (2026-10-10)
+
+Design: [ADR 0003](adr/0003-zip-uploads.md). No Workers AI quota was used.
+
+## Where it ran
+
+| Where | What |
+|---|---|
+| Node (`tests/unit/zip.test.ts`, 36 tests) | The reader and manifest on archives built by `tests/support/zip.ts`, including hostile ones |
+| Node, through the HTTP API (`tests/unit/upload-flow.test.ts`, 17 tests) | Upload, indexing, search, files, symbols, importers, overview, answers, isolation, duplicates, integrity, interruption, storage failure, crash guard, cancellation, expiry, new versions, deletion, partial indexes and AI quota exhaustion. This uses the real SQLite schema, with fake AI and Vectorize and a fetch that fails if GitHub is contacted |
+| Chromium (a temporary page under the Vite dev server, since removed) | The same reader and `prepareArchive` the UI uses, with the browser's own `DecompressionStream` |
+| workerd (`tests/integration/routing.test.ts`) | The upload routes reach the Worker and require a session |
+| Cloudflare (`eval/upload-remote.ts`) | The isolated evaluation deployment with `DAILY_NEURON_BUDGET=0`. spf13/cobra's 62 files and expressjs/cors's 17, each wrapped in a `<repo>-main/` folder with `node_modules`, `.env`, `.git` and a PNG added |
+
+## Results
+
+| Check | Result |
+|---|---|
+| Valid archives: JS/TS, Python, Go, HTML/CSS, Markdown, JSON | Indexed with exact repository-relative paths. CRLF is normalised without shifting line numbers. A binary `.json` is skipped as binary |
+| Search, file viewer, outline, symbols, importers, overview, Ask citations on an upload | All correct. Citations carry path and lines and no GitHub link. Every cited range matches the file |
+| Rejected archives (Node) | Empty, PNG renamed to .zip, plain text, self-extracting prefix, truncated, damaged directory, encrypted, ZIP64, overlapping entries, huge declared expansion, `../` traversal, Windows `..\` traversal, absolute and drive-letter paths, NUL and bidirectional characters, traversal hidden in a non-UTF-8 name, duplicates after normalisation, file/folder collision, no supported files, over the size, entry or file limits, timeout: **all rejected with their reason** |
+| Bomb and damage while extracting | An entry that expands past its declared size is stopped (`zip_bomb`). A CRC mismatch is rejected (`corrupt`) |
+| Same cases in Chromium | Valid archive, bomb, corrupt data, traversal, encryption, overlap, non-ZIP, misleading MIME type, misleading extension: **9/9 as in Node**. The fingerprint was stable |
+| Skipped (counted, never extracted or indexed) | Symbolic links, special files, `__MACOSX`, unsupported compression, suspicious ratio, non-UTF-8 names, `node_modules`, `.git`, `.env`, binaries |
+| Forged requests (server) | Unsafe, unnormalised or ignored paths in a manifest; more than 2,000 files; bytes that differ from the listing (same length, different CRC, or extra bytes); wrong order; invalid base64; a batch over 256 KB: **all refused, and the cursor did not move** |
+| Duplicates | A second identical create returns 409. A repeated batch adds no rows. A batch ahead of the cursor or for an old version returns 409. A new version while one is uploading returns 409 |
+| Isolation | Two users uploading the same name get separate repositories. Another user's repository answers 404 to every upload endpoint, and search never crosses repositories. No session gives 401; another origin gives 403 |
+| Interruption | Resumes from the server's cursor with the same ZIP (same fingerprint even with entries reordered). The cron trigger ignores an upload in progress |
+| Storage failure in a batch | Returns 503 and writes nothing. The crash-guard attempt is refunded, so the file is not skipped. A retry succeeds |
+| Repeated CPU-limit kills | The file is skipped as `processing_limit`, as for GitHub |
+| Cancel and expiry | Status `upload_cancelled` or `upload_expired`; chunks, FTS rows, file rows and vectors are removed; a new upload works afterwards |
+| New version | The old index stays searchable during the upload. Afterwards its rows and vectors are removed |
+| Deletion | Rows, FTS entries and vectors for the upload are removed. Another repository's chunks and vectors are unchanged |
+| Partial index | A budget cut or an archive-side skip of a supported file marks the index partial |
+| AI allowance used up | The upload becomes searchable; embedding pauses with a message, and the semantic index is not claimed |
+| Prompt injection in a README | Quoted as data in the overview; in the prompt it appears only inside an evidence block, never in instructions |
+
+## Measured on Cloudflare
+
+| Measure | Result |
+|---|---|
+| Checks through the live API | Upload state 2/2, file content and line numbers 4/4 (`command.go`, `cobra.go`, `README.md`, `go.mod`), symbol line 1/1 (`SuggestionsFor` at `command.go:863`), search 1/1, overview 1/1, duplicate create 1/1, cancel 1/1. After deletion: 0 repos, versions, chunks and files left |
+| cobra upload | 165 KB archive, 62 files in 8 batches, searchable after 4 s, 520 chunks, coverage full. Batch latency p50 341 ms, max 521 ms from the client |
+| Worker CPU (`wrangler tail`) | Upload batches p50 18 ms, max 28 ms (8 captured). Create upload 12 ms. Cancel 8 ms. Delete 12 ms. 0 errors, 0 CPU or memory limits |
+| Workers AI | 0 Neurons (eval ledger unchanged at 2,653) |
+| Vectorize | Unchanged (no vectors written) |
+
+## Limits of this evaluation
+
+- **Synthetic archives:** the archives were built by our own test writer, not by every real ZIP tool. Real archives from macOS Finder, Windows "Send to", 7-Zip and GitHub use the same stored/deflate format, but were not each tested.
+- **No production upload by automation:** that would need a production sign-in. The authenticated flow was verified on the isolated deployment, which runs the same code.
+- **Browser support:** `DecompressionStream("deflate-raw")` is required. Very old browsers get an error instead of an upload.

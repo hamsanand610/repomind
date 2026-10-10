@@ -73,7 +73,12 @@ These numbers come from the isolated evaluation deployment running the productio
 | Rejected outright | above 4× the chunk limit | — |
 | File size | 400 KB | Larger files are skipped |
 | Supported files per repository | 2,000 | Checked in the browser before adding |
-| Repositories per account | 5 | — |
+| Repositories per account | 5 | Uploads count too |
+| ZIP archive | 50 MB, 20,000 entries, 512 MB declared expanded size | Checked in the browser; the archive never reaches the Worker ([ADR 0003](adr/0003-zip-uploads.md)) |
+| One upload request | 8 files or 256 KB (one file up to 400 KB); JSON body up to 640 KB | Rejected with 413; the same size as one GitHub indexing step |
+| Unfinished upload | 24 hours without progress | Stopped by the cron trigger, and its partial data removed |
+
+**Why uploads fit the Free plan:** each upload request does the same work as one GitHub indexing step. Measured on Cloudflare, upload batches used 18 ms CPU at p50 and 28 ms at most (8 batches for cobra's 62 files). Creating an upload used 12 ms; cancelling used 8 ms. No upload request failed. Uploads use no Workers AI until embedding, which is the same as for GitHub repositories. D1 writes per chunk are also the same as for GitHub. The 100 MB request-body limit is never approached.
 
 **Usage on 2026-10-10, from the ledgers and `wrangler d1 info` (17:50 UTC):**
 - **Workers AI:** about 7,500 of 10,000 Neurons:

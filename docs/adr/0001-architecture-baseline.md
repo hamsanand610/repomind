@@ -38,6 +38,7 @@ Constraints:
 RepoMind never:
 - writes to, commits to, pushes to or opens pull requests on a user's repository;
 - executes submitted or fetched repository code, install scripts, builds or tests;
+- extracts uploaded archives to a file system, or sends an archive itself to the server (see [ADR 0003](0003-zip-uploads.md));
 - claims access to private repositories. These are rejected or reported as inaccessible until an authorized integration has been designed and reviewed.
 
 It may suggest improvements, but it must state that it cannot apply them.
@@ -60,6 +61,14 @@ It may suggest improvements, but it must state that it cannot apply them.
 - **API headers.** Every API response sets `Cache-Control: no-store`, `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` and a deny-all CSP.
 - **Static-asset headers.** `public/_headers` applies a strict same-origin CSP plus framing, sniffing and permissions headers to assets.
 - **Untrusted UI output.** The UI renders server text as text (never raw HTML), and a React error boundary replaces crashes with a recovery message.
+
+**ZIP uploads** ([ADR 0003](0003-zip-uploads.md)), covered by `tests/unit/zip.test.ts` and `tests/unit/upload-flow.test.ts`:
+- **The archive is read only in the browser.** Its signature, structure, encryption, ZIP64 and multi-disk markers, size, entry count, declared expansion and overlapping entries are all checked there.
+- **Archives with traversal, absolute, control-character, duplicate or colliding paths are rejected whole.** Symbolic links and special files are never followed or indexed.
+- **Decompression is bounded.** It stops at the declared size, the CRC is verified, and only admitted files are decompressed, one batch at a time.
+- **The server re-validates every manifest and every uploaded byte.** Paths must be normalised and allowed by policy. Each file must be the next one in the admitted plan, with exactly the planned size and CRC-32. Batches and request bodies are capped.
+- **Every upload endpoint is owner-scoped, same-origin and rate-limited.** One upload runs per repository at a time; names are unique per owner, and the per-owner repository cap applies.
+- **Abandoned or cancelled uploads lose their partial data automatically.**
 
 **Planned:**
 - M2: authentication and ownership checks on every stateful or quota-consuming endpoint; repository-relative path normalisation; ingestion size and count caps; secret redaction in indexed content.
@@ -131,7 +140,7 @@ ZIP upload is in scope but follows the GitHub path (M6) and is extracted in the 
 | D5 | Citation contract `[E#]`, built server-side | Accepted, implemented and tested live | 2026-10-09 |
 | D6 | Invite codes + HMAC-signed, expiring, HttpOnly/SameSite=Strict sessions | Accepted by owner, implemented | 2026-10-09 |
 | D7 | Vitest (Node) + workerd integration via `vite preview` | Accepted | 2026-10-09 |
-| D8 | ZIP extracted in the browser, re-validated on the server | Accepted (M6) | 2026-10-09 |
+| D8 | ZIP extracted in the browser, re-validated on the server | Implemented ([ADR 0003](0003-zip-uploads.md)) | 2026-10-10 |
 | D9 | Design tokens; light, warm theme | Accepted, implemented | 2026-10-09 |
 | D10 | Repository discovery (commit pin + tree) runs in the browser; the server re-validates it and alone downloads content from raw.githubusercontent.com. Unauthenticated GitHub API calls from shared Worker IPs were rate-limited on the first live request. A server-side path remains if a GITHUB_TOKEN secret is added. | Implemented, verified live | 2026-10-09 |
 | D11 | Ingestion as resumable, idempotent D1-backed steps driven by the open page, plus a once-a-minute cron trigger. Queues are not used, because no Queue-consumer CPU measurement exists for the Free plan. | Implemented, verified live | 2026-10-09 |
@@ -148,3 +157,4 @@ ZIP upload is in scope but follows the GitHub path (M6) and is extracted in the 
 | D22 | Full-text queries run the FTS match first and filter by version afterwards (`rowid IN (SELECT rowid FROM chunks_fts WHERE … MATCH ?)`). Reason: joined the other way, local SQLite walked every chunk of the version and re-evaluated the match for each (150 ms to 2.7 s instead of about 1–20 ms). Keyword-search results were identical on 217 queries. On D1, rows read were the same for both forms. | Implemented | 2026-10-10 |
 | D23 | Admission treats only documentation file types (Markdown, MDX, reStructuredText, AsciiDoc, plain text) under `docs/` or `website/` as documentation. Code there is source. Reason: babel/website's React site code was ranked with the docs and mostly cut. | Implemented; regression test | 2026-10-10 |
 | D24 | The architecture overview marks every statement as "From the files" (quoted or counted, with a line citation) or "Inferred" (a naming convention). README and manifest text is quoted verbatim, never interpreted, so instructions inside a repository cannot become facts. A declared dependency is never shown as used unless an import statement for it is found. | Implemented; prompt-injection test | 2026-10-10 |
+| D25 | ZIP uploads ([ADR 0003](0003-zip-uploads.md)). The browser reads and checks the archive and sends only admitted files' bytes in plan order, in small batches. The server validates the manifest and every file (path, order, size, CRC-32) and indexes each batch with the GitHub step code. No R2, Queues or server-side archive parsing. Migration 0004 adds `repos.source`. Unfinished uploads expire after 24 hours, and cancelled or expired uploads lose their partial data. | Implemented; evaluated locally, in Chromium and on Cloudflare | 2026-10-10 |
