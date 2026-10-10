@@ -22,7 +22,11 @@ export function relativeTime(epochMs: number, now = Date.now()): string {
   return rtf.format(Math.round(seconds / 86400), 'day')
 }
 
-export type RepoState = 'indexing' | 'embedding' | 'ready' | 'failed' | 'waiting'
+/**
+ * waiting: indexing is paused (rate limit, retry backoff); nothing new is searchable yet.
+ * semantic_paused: searchable now; only the semantic index is paused (AI allowance, storage).
+ */
+export type RepoState = 'indexing' | 'embedding' | 'ready' | 'failed' | 'waiting' | 'semantic_paused'
 
 /** One overall state for badges, derived only from real server counters. */
 export function repoState(repo: RepoSummary, now = Date.now()): RepoState {
@@ -30,7 +34,7 @@ export function repoState(repo: RepoSummary, now = Date.now()): RepoState {
   if (latest?.status === 'indexing') return latest.nextAttemptAt > now ? 'waiting' : 'indexing'
   if (latest?.status === 'failed' && !repo.active) return 'failed'
   const active = repo.active
-  if (active && active.chunksEmbedded < active.chunksEmbeddable) return active.nextAttemptAt > now ? 'waiting' : 'embedding'
+  if (active && active.chunksEmbedded < active.chunksEmbeddable) return active.nextAttemptAt > now ? 'semantic_paused' : 'embedding'
   return active ? 'ready' : 'failed'
 }
 
@@ -40,6 +44,21 @@ export const STATE_LABEL: Record<RepoState, string> = {
   ready: 'Ready',
   failed: 'Failed',
   waiting: 'Paused',
+  semantic_paused: 'Ready · semantic search paused',
+}
+
+/** True when the searchable index leaves supported files out (budget, limits, errors). */
+export function isPartial(repo: RepoSummary): boolean {
+  return repo.active?.coverage === 'partial'
+}
+
+/** Files that are actually searchable in a ready version. */
+export function filesIndexed(version: VersionSummary): number {
+  return version.filesTotal - Object.values(version.indexSkips ?? {}).reduce((sum, n) => sum + n, 0)
+}
+
+export function isPaused(state: RepoState): boolean {
+  return state === 'waiting' || state === 'semantic_paused'
 }
 
 export function needsWork(repo: RepoSummary): boolean {
@@ -65,6 +84,8 @@ export const SKIP_REASON_LABEL: Record<string, string> = {
   over_repository_budget: 'Outside the repository chunk budget',
   not_found: 'Not found at the indexed commit',
   processing_limit: 'Could not be processed within free-tier limits',
+  download_failed: 'GitHub could not deliver it (retried for about 35 minutes)',
+  processing_error: 'Could not be processed (retried, then skipped)',
   duplicate_path: 'Duplicate path',
   unsafe_character: 'Unsafe characters in the path',
   dot_dot_segment: 'Unsafe path',

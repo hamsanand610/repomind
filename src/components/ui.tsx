@@ -10,8 +10,17 @@ export function Spinner({ label }: { label?: string }) {
   )
 }
 
-export function StatusBadge({ state }: { state: RepoState }) {
-  return <span className={`badge badge--${state}`}>{STATE_LABEL[state]}</span>
+export function StatusBadge({ state, partial = false }: { state: RepoState; partial?: boolean }) {
+  return (
+    <span className="badges">
+      <span className={`badge badge--${state}`}>{STATE_LABEL[state]}</span>
+      {partial && (
+        <span className="badge badge--partial" title="Some supported files are not indexed; answers never cite them.">
+          Partial index
+        </span>
+      )}
+    </span>
+  )
 }
 
 /** A bar over real counters only; renders nothing meaningful without a total. */

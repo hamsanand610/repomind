@@ -131,8 +131,13 @@ async function hashKey(text: string): Promise<string> {
 
 // --- Repositories ----------------------------------------------------------------
 
-export function toVersionSummary(row: VersionRow | null): VersionSummary | null {
+/** Index-time skips that leave supported files unsearchable (content-type skips such as binaries do not). */
+const COVERAGE_GAPS = new Set(["over_repository_budget", "processing_limit", "download_failed", "processing_error", "too_large", "exceeds_repository_share"]);
+
+export function toVersionSummary(row: VersionRow | null, indexSkips: Record<string, number> = {}): VersionSummary | null {
   if (!row) return null;
+  const admission = parseAdmission(row);
+  const gaps = Object.keys(indexSkips).some((reason) => COVERAGE_GAPS.has(reason));
   return {
     id: row.id,
     commitSha: row.commit_sha,
@@ -149,7 +154,9 @@ export function toVersionSummary(row: VersionRow | null): VersionSummary | null 
     nextAttemptAt: row.next_attempt_at,
     createdAt: row.created_at,
     finishedAt: row.finished_at,
-    admission: parseAdmission(row),
+    admission,
+    indexSkips,
+    coverage: admission?.decision === "partial" || gaps ? "partial" : "full",
   };
 }
 
@@ -157,6 +164,14 @@ async function repoSummary(context: RequestContext, repo: RepoRow): Promise<Repo
   const db = context.services.db;
   const active = await getVersion(db, repo.active_version_id);
   const latest = repo.latest_version_id === repo.active_version_id ? active : await getVersion(db, repo.latest_version_id);
+  const skips: Record<string, number> = {};
+  if (active?.status === "ready") {
+    const { results } = await db
+      .prepare("SELECT skip_reason AS reason, COUNT(*) AS n FROM files WHERE version_id = ? AND status = 'skipped' GROUP BY skip_reason")
+      .bind(active.id)
+      .all<{ reason: string | null; n: number }>();
+    for (const row of results) skips[row.reason ?? "unknown"] = row.n;
+  }
   return {
     id: repo.id,
     owner: repo.gh_owner,
@@ -165,8 +180,8 @@ async function repoSummary(context: RequestContext, repo: RepoRow): Promise<Repo
     githubUrl: `https://github.com/${repo.gh_owner}/${repo.gh_repo}`,
     createdAt: repo.created_at,
     updatedAt: repo.updated_at,
-    active: toVersionSummary(active),
-    latest: toVersionSummary(latest),
+    active: toVersionSummary(active, skips),
+    latest: latest === active ? toVersionSummary(active, skips) : toVersionSummary(latest),
   };
 }
 

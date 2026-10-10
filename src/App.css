@@ -230,8 +230,17 @@
 .badge--ready { background: var(--color-success-bg); color: var(--color-success-text); }
 .badge--indexing,
 .badge--embedding { background: var(--color-accent-subtle); color: var(--color-accent-strong); }
-.badge--waiting { background: var(--color-warning-bg); color: var(--color-warning-text); }
+.badge--waiting,
+.badge--semantic_paused { background: var(--color-warning-bg); color: var(--color-warning-text); }
 .badge--failed { background: var(--color-danger-bg); color: var(--color-danger-text); }
+.badge--partial { background: var(--color-warning-bg); color: var(--color-warning-text); }
+.badge--partial::before { border-radius: 0; }
+
+.badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
 
 .spinner {
   display: inline-flex;

@@ -3,7 +3,7 @@ import type { RepoSummary, VersionSummary } from '../../../shared/api.ts'
 import { ConfirmDialog, Notice, Progress, Spinner } from '../../components/ui.tsx'
 import { api, errorMessage } from '../../lib/api.ts'
 import { discoverRepository } from '../../lib/discovery.ts'
-import { SKIP_REASON_LABEL, relativeTime, repoState, shortSha } from '../../lib/format.ts'
+import { SKIP_REASON_LABEL, filesIndexed, relativeTime, repoState, shortSha } from '../../lib/format.ts'
 import { navigate } from '../../lib/router.ts'
 
 export function OverviewTab({ repo, onChange }: { repo: RepoSummary; onChange: (repo: RepoSummary) => void }) {
@@ -56,6 +56,8 @@ function IndexingProgress({ version }: { version: VersionSummary }) {
 
 function ActiveIndex({ version }: { version: VersionSummary }) {
   const semanticDone = version.chunksEmbedded >= version.chunksEmbeddable
+  const indexed = filesIndexed(version)
+  const skips = Object.entries(version.indexSkips ?? {}).sort((a, b) => b[1] - a[1])
   return (
     <div className="stack">
       <dl className="facts">
@@ -67,7 +69,10 @@ function ActiveIndex({ version }: { version: VersionSummary }) {
         </div>
         <div>
           <dt>Files indexed</dt>
-          <dd>{version.filesTotal.toLocaleString()}</dd>
+          <dd>
+            {indexed.toLocaleString()}
+            {indexed < version.filesTotal && <span className="muted"> of {version.filesTotal.toLocaleString()} selected</span>}
+          </dd>
         </div>
         <div>
           <dt>Searchable chunks</dt>
@@ -78,6 +83,24 @@ function ActiveIndex({ version }: { version: VersionSummary }) {
           <dd>{version.finishedAt ? relativeTime(version.finishedAt) : '—'}</dd>
         </div>
       </dl>
+      {version.coverage === 'partial' && (
+        <Notice tone="warning" title="Partial index">
+          <p>
+            Some supported files are not searchable. The free plan allows {version.admission?.budget.toLocaleString() ?? '1,500'} chunks per repository
+            (roughly 1.5 MB of text) and files up to 400 KB. Answers never cite files that are not indexed; the Files tab shows each file's reason.
+          </p>
+          {skips.length > 0 && (
+            <ul className="reason-list">
+              {skips.map(([reason, count]) => (
+                <li key={reason}>
+                  <span>{SKIP_REASON_LABEL[reason] ?? reason}</span>
+                  <span className="muted">{count.toLocaleString()}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Notice>
+      )}
       {!semanticDone && <Progress label="Semantic index (for questions)" value={version.chunksEmbedded} total={version.chunksEmbeddable} />}
       {version.embeddingNote && <Notice tone="warning">{version.embeddingNote}</Notice>}
       {semanticDone && version.chunksEmbeddable > 0 && <p className="muted">Keyword and semantic search are both available.</p>}

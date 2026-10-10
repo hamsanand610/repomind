@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RepoSummary } from '../../shared/api.ts'
 import { ErrorNotice, Spinner, StatusBadge } from '../components/ui.tsx'
 import { ApiError, api, errorMessage } from '../lib/api.ts'
-import { needsWork, repoState, shortSha } from '../lib/format.ts'
+import { isPartial, isPaused, needsWork, repoState, shortSha } from '../lib/format.ts'
 import { linkHandler } from '../lib/router.ts'
 import { AskTab } from './repo/AskTab.tsx'
 import { FilesTab } from './repo/FilesTab.tsx'
@@ -44,7 +44,7 @@ function useRepository(id: string) {
   }, [load])
 
   const working = repo !== null && needsWork(repo)
-  const waitingUntil = repo && repoState(repo) === 'waiting' ? Math.max(repo.latest?.nextAttemptAt ?? 0, repo.active?.nextAttemptAt ?? 0) : 0
+  const waitingUntil = repo && isPaused(repoState(repo)) ? Math.max(repo.latest?.nextAttemptAt ?? 0, repo.active?.nextAttemptAt ?? 0) : 0
   const stepping = useRef(false)
 
   useEffect(() => {
@@ -117,7 +117,7 @@ export function RepoPage({ id, tab }: { id: string; tab: Tab }) {
           <h1>
             {repo.owner}/<strong>{repo.name}</strong>
           </h1>
-          <StatusBadge state={repoState(repo)} />
+          <StatusBadge state={repoState(repo)} partial={isPartial(repo)} />
         </div>
         {version && (
           <p className="repo-header__meta">

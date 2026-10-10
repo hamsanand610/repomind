@@ -81,6 +81,10 @@ export interface VersionSummary {
   createdAt: number;
   finishedAt: number | null;
   admission: AdmissionReport | null;
+  /** Files skipped while indexing, by reason (ready versions; empty otherwise). */
+  indexSkips: Record<string, number>;
+  /** "partial" when admission left files out or files were skipped for limits or errors. */
+  coverage: "full" | "partial";
 }
 
 export interface RepoSummary {

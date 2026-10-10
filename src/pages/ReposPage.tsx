@@ -4,7 +4,7 @@ import { describeGitHubUrlError, parseGitHubRepoUrl } from '../../shared/github-
 import { EmptyState, ErrorNotice, Notice, Progress, Spinner, StatusBadge } from '../components/ui.tsx'
 import { ApiError, api, errorMessage } from '../lib/api.ts'
 import { discoverRepository } from '../lib/discovery.ts'
-import { relativeTime, repoState, shortSha } from '../lib/format.ts'
+import { isPartial, relativeTime, repoState, shortSha } from '../lib/format.ts'
 import { linkHandler, navigate } from '../lib/router.ts'
 
 export function ReposPage() {
@@ -53,7 +53,7 @@ export function ReposPage() {
   )
 }
 
-function RepoCard({ repo }: { repo: RepoSummary }) {
+export function RepoCard({ repo }: { repo: RepoSummary }) {
   const state = repoState(repo)
   const version = repo.latest?.status === 'indexing' ? repo.latest : (repo.active ?? repo.latest)
   const href = `/repos/${encodeURIComponent(repo.id)}`
@@ -63,7 +63,7 @@ function RepoCard({ repo }: { repo: RepoSummary }) {
         <span className="repo-card__name">
           {repo.owner}/<strong>{repo.name}</strong>
         </span>
-        <StatusBadge state={state} />
+        <StatusBadge state={state} partial={isPartial(repo)} />
       </a>
       <p className="repo-card__meta">
         {version ? (
@@ -76,6 +76,9 @@ function RepoCard({ repo }: { repo: RepoSummary }) {
       </p>
       {state === 'indexing' && version && <Progress label="Files indexed" value={version.filesProcessed} total={version.filesTotal} />}
       {state === 'failed' && repo.latest?.errorMessage && <p className="repo-card__error">{repo.latest.errorMessage}</p>}
+      {state !== 'failed' && repo.active && repo.latest?.status === 'failed' && (
+        <p className="repo-card__error">Last re-index failed: {(repo.latest.errorMessage ?? 'unknown error').replace(/\.$/, '')}. Still serving the previous index.</p>
+      )}
     </li>
   )
 }
@@ -137,6 +140,10 @@ function AddRepository({ disabled, limit }: { disabled: boolean; limit: number }
       </form>
       <p id="repo-url-help" className="hint">
         Public repositories only, e.g. <code>github.com/expressjs/cors</code> or a <code>/tree/branch</code> URL.
+      </p>
+      <p className="hint">
+        Free-plan limits: up to 2,000 supported files and 1,500 searchable chunks (about 1.5 MB of text) per repository; larger
+        repositories are indexed partially, README and source first. Files over 400 KB are skipped.
       </p>
       {disabled && <Notice tone="info">You have reached the limit of {limit} repositories. Delete one to add another.</Notice>}
       {invalid && <Notice tone="warning">{invalid}</Notice>}

@@ -3,5 +3,8 @@
   "compilerOptions": {
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo"
   },
-  "include": ["tests", "bench", "eval/run.ts", "eval/dataset.ts", "eval/keyword.ts"]
+  "include": ["tests", "bench", "eval"],
+  // eval/worker.ts is checked with the Worker types (tsconfig.worker.json); the
+  // component render test needs DOM and JSX (tsconfig.app.json).
+  "exclude": ["eval/worker.ts", "eval/results", "tests/unit/ui-states.test.ts"]
 }
