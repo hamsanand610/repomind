@@ -68,10 +68,13 @@ export interface FakeAiOptions {
   failWith?: string;
 }
 
-export function fakeAi(options: FakeAiOptions = {}): AiBinding & { calls: Array<{ model: string; kind: string }> } {
+export function fakeAi(options: FakeAiOptions = {}): AiBinding & { calls: Array<{ model: string; kind: string }>; prompts: string[] } {
   const calls: Array<{ model: string; kind: string }> = [];
+  /** Full text (system + user) of every chat prompt, for assertions about what the model saw. */
+  const prompts: string[] = [];
   return {
     calls,
+    prompts,
     async run(model, inputs) {
       if (options.failWith) throw new Error(options.failWith);
       if (Array.isArray(inputs.documents) || Array.isArray(inputs.queries)) {
@@ -81,6 +84,7 @@ export function fakeAi(options: FakeAiOptions = {}): AiBinding & { calls: Array<
       }
       calls.push({ model, kind: "chat" });
       const messages = inputs.messages as Array<{ role: string; content: string }>;
+      prompts.push(messages.map((message) => message.content).join("\n"));
       const user = messages[messages.length - 1].content;
       const question = /^Question: (.*)$/m.exec(user)?.[1] ?? "";
       const labels = [...user.matchAll(/label="(E\d+)"/g)].map((match) => match[1]);
@@ -97,7 +101,8 @@ export function fakeAi(options: FakeAiOptions = {}): AiBinding & { calls: Array<
   };
 }
 
-export function fakeVectorize(): VectorizeBinding & { store: Map<string, VectorRecord> } {
+/** `ignoreNamespace` simulates a broken index that returns vectors from every version. */
+export function fakeVectorize(options: { ignoreNamespace?: boolean } = {}): VectorizeBinding & { store: Map<string, VectorRecord> } {
   const store = new Map<string, VectorRecord>();
   const cosine = (a: number[], b: number[]) => {
     let dot = 0;
@@ -115,12 +120,12 @@ export function fakeVectorize(): VectorizeBinding & { store: Map<string, VectorR
     async upsert(vectors) {
       for (const vector of vectors) store.set(vector.id, vector);
     },
-    async query(vector, options) {
+    async query(vector, query) {
       const matches = [...store.values()]
-        .filter((record) => record.namespace === options.namespace)
+        .filter((record) => options.ignoreNamespace || record.namespace === query.namespace)
         .map((record) => ({ id: record.id, score: cosine(vector, record.values) }))
         .sort((a, b) => b.score - a.score)
-        .slice(0, options.topK);
+        .slice(0, query.topK);
       return { matches };
     },
     async deleteByIds(ids) {

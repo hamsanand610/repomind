@@ -163,6 +163,8 @@ export interface AskResponse {
   retrieval: {
     keywordHits: number;
     vectorHits: number;
+    /** Evidence from project files (README, manifests, entry points) chosen for a broad question. */
+    contextFiles: number;
     semantic: boolean;
     /**
      * used: vector matches contributed. no_matches: searched, nothing close.

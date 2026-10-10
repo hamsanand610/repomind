@@ -137,6 +137,7 @@ function Answer({ repo, response }: { repo: RepoSummary; response: AskResponse }
     listRef.current?.querySelector(`[data-citation="${number}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   }
   const retrieval = RETRIEVAL_LABEL[response.retrieval.semanticStatus] ?? 'keyword retrieval'
+  const contextFiles = response.retrieval.contextFiles ?? 0
 
   return (
     <div className="stack">
@@ -158,7 +159,8 @@ function Answer({ repo, response }: { repo: RepoSummary; response: AskResponse }
         </div>
       )}
       <p className="hint">
-        From commit <code>{shortSha(response.commitSha)}</code> using {retrieval}.
+        From commit <code>{shortSha(response.commitSha)}</code> using {retrieval}
+        {contextFiles > 0 && `, plus ${contextFiles} project ${contextFiles === 1 ? 'file' : 'files'} (README, manifests, entry points)`}.
       </p>
     </div>
   )

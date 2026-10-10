@@ -24,6 +24,7 @@ describe("buildEvidenceBlocks", () => {
     ordinal,
     seq,
     path: `file${ordinal}.ts`,
+    language: "typescript",
     startLine: lines[0],
     endLine: lines[1],
     text,
