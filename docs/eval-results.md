@@ -158,3 +158,73 @@ This evaluation follows two failures reported from the live app:
 - **Sample size:** one pass per case at temperature 0.1, on 3 small repositories.
 - **Pattern coverage:** intent detection is pattern-based, so unusual phrasings of a broad question fall back to normal retrieval.
 - **Portfolio entry point:** the answer accurately quotes `package.json` `"main": "index.js"`, but the repository has no root `index.js`.
+
+# Reliability and scale evaluation (2026-10-10)
+
+**Where it ran:** on Cloudflare itself, on an isolated evaluation deployment (`wrangler.eval-remote.jsonc`).
+- Its own Worker, D1 database (`repomind-eval-db`) and eval-only invite code.
+- The separate `repomind-eval` Vectorize index, and an AI cap of 3,500 Neurons/day.
+- It runs the production Worker code, with no eval-only endpoints.
+- The harness drives it exactly like the browser: the UI's own discovery code, then `/step` until done.
+- Worker CPU and outcomes come from `wrangler tail`; D1 rows from `wrangler d1 info`.
+
+**Reproduce:** `npm run eval:scale`, `eval/lifecycle.ts` (re-index and delete), `eval/tail-summary.ts`. The dataset is `eval/scale-dataset.ts`. Deploy the evaluation Worker with `npx wrangler deploy --config wrangler.eval-remote.jsonc`, then load its secrets from the git-ignored `eval-remote.local` with `wrangler secret bulk`.
+
+## Repositories (pinned)
+
+| Repository | Language | Admission | Files indexed | Chunks | Searchable after | Fully embedded after | Steps |
+|---|---|---|---|---|---|---|---|
+| `spf13/cobra` @ `adbc881` | Go | full | 62 | 520 | 10 s | 135 s | 41 |
+| `pallets/click` @ `2247b35` | Python | full (needed the fix below) | 171 | 1,135 | 26 s | 356 s | 93 |
+| `axios/axios` @ `f694ecd` | JavaScript | **partial**: 229 of 463 files | 229 | 1,143 | 81 s | 555 s | 99 |
+| `redis/redis` @ `558ef8f` | C | **rejected**: needs about 12.8k–16.5k chunks | — | — | — | — | 0 |
+| `django/django` @ `dab0a5c` | Python | **refused in the browser**: 4,246 supported files, over the 2,000 limit | — | — | — | — | — |
+
+**UI states:** checked through the live API, with the UI's own `repoState` and `isPartial`. All five matched expectations: ready/full, ready/full, ready/partial, failed with the admission message, and refused before adding.
+
+## Measured on Cloudflare (Workers Free)
+
+| Measure | Result |
+|---|---|
+| Worker CPU per `/step` (230 indexing and embedding steps) | p50 12–18 ms, p95 30 ms, p99 54 ms, max 123 ms. The max was the click step that chunks the 130 KB `core.py` |
+| Worker CPU per answer / search / cron run | answer p50 29 ms (max 54); search p50 6 ms; cron p50 0–9 ms (max 37) |
+| CPU-limit, memory or exception failures | **0** in about 330 invocations (`exceededCpu`: 0, `exceededMemory`: 0, exceptions: 0) |
+| Step latency, as seen by the browser | p50 3.2–4.7 s, p95 5.8–12.1 s, max 18.1 s (embedding steps wait on Workers AI) |
+| Answer latency | p50 5.2 s, max 15.7 s (18 answers) |
+| New vectors queryable after | 91 s |
+| D1 rows written | about 8 per chunk for index plus embed (cobra about 4.1k, click 8.9k, axios 9.2k including questions) |
+| D1 rows read | about 30k–110k per repository cycle |
+| Workers AI | 2,404 Neurons on the eval ledger for indexing three repositories (2,798 chunks) and 42 answers |
+| Re-index (cobra, 520 chunks, more than 100) | 45 steps, 155 s. The superseded version's rows were removed automatically, then its vectors |
+| Deleting all four repositories | every DELETE returned 200. The cron trigger finished cleanup in 169 s: 0 versions and rows left. Vectorize returned to exactly its pre-evaluation count (257, the local evaluation set), so no vectors leaked. D1 wrote 7,491 rows (about 2.7 per chunk) |
+
+**The 10 ms CPU limit:** the Free plan documents 10 ms per invocation, but no invocation was stopped, even at 123 ms. RepoMind does not depend on that leniency. Indexing steps already had a crash guard (retry one file, then skip it as `processing_limit`). Embedding steps now have one too: retry with 4 chunks, then 1, then leave that chunk to keyword search. Before this, a killed embedding step would have retried forever and spent AI quota each time.
+
+## Retrieval and answers (latest code, on Cloudflare)
+
+- **Exact identifier search: 12/12** expected file in the top 3. This includes `ParameterSource` in click's `src/click/core.py`, which the old admission rule excluded.
+- **Questions: 14/18 pass the strict rule; 17/18 correct on manual review.** Every citation's line range and text matched the file at the pinned commit.
+  - **Absent topics:** 3/3 abstained.
+  - **False premises:** 3/3 refuted or abstained. click cites `docs/why.md` to explain that it is not built on argparse.
+  - **Correct but citing documentation:** three answers cite documentation where the dataset expected source files. cobra's entry point (it is a library; the answer explains `cmd.Execute()` from the user guide), cobra's suggestions (Levenshtein distance, minimum 2, `DisableSuggestions`), and axios' interceptors (LIFO order, chained). All three are accurate.
+  - **Recall miss:** click's "How does click suggest a similar option name…?" abstained. Retrieval found `parser.py`, which raises `NoSuchOption`, but not the `exceptions.py` chunk that builds "Did you mean …?" with `get_close_matches`. This is an honest abstention, not a wrong answer.
+- **Context evaluation re-run locally (Portfolio, Mars, cors, including prompt injection): 30/30**, with the new citation reminder.
+
+## Defects found and fixed
+
+1. **Transient GitHub errors permanently skipped files.** Handled errors were counted as CPU-limit crashes, so four 5xx responses (about 2 minutes) skipped a file as `processing_limit`. GitHub rate limits did the same.
+2. **Vectors orphaned after a crash.** A step killed after writing vectors but before marking chunks embedded left vectors behind when the repository was deleted. In the test, 16 vectors leaked and kept using the shared storage quota.
+3. **Deleting returned an error** whenever Vectorize deletes failed, although the repository was already gone.
+4. **Failed re-index attempts accumulated** forever.
+5. **Admission excluded `src/click/core.py`** (its 10% per-file share rule) although the whole repository fit. On axios, 100+ translated docs (`docs/es`, `docs/fr`, `docs/zh`) crowded out almost all of `lib/`.
+6. **Uncited answers became "Not enough evidence".** On cobra, "What does this project do?" got a correct answer with no `[E#]` labels.
+7. **Embedding steps had no crash guard** (see the 10 ms note above).
+8. **The UI did not distinguish partial indexes or a paused semantic index.** "Files indexed" counted planned files, not searchable ones. A failed re-index card read "…commit.. Still serving…"; the render test caught that.
+
+**Regression tests:** each fix has one, and each fails on the previous code: 7 recovery tests, 14 admission tests, 3 citation tests and 1 embedding crash-guard test.
+
+## Limits of this evaluation
+
+- **Sample size:** one run per question at temperature 0.1; three indexed repositories and two rejected ones.
+- **Leniency over time:** CPU leniency was observed over about 330 invocations; it is not a documented guarantee.
+- **Free quotas are account-wide:** the evaluation shared them with production. Totals for the day are in [free-tier.md](free-tier.md).

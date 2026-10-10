@@ -30,10 +30,16 @@ export async function github(path: string): Promise<unknown> {
   return response.json();
 }
 
-export async function signInLocally(): Promise<void> {
-  const devVars = readFileSync(".dev.vars", "utf8");
+/**
+ * Signs in with an eval-only invite code from a git-ignored file: .dev.vars
+ * for the local eval server, eval-remote.local for the isolated eval
+ * deployment. Refuses to run against production.
+ */
+export async function signInLocally(secretsFile = ".dev.vars"): Promise<void> {
+  if (new URL(BASE).hostname === "repomind.repomind.workers.dev") throw new Error("Refusing to sign in to production from automation.");
+  const devVars = readFileSync(secretsFile, "utf8");
   const code = /^INVITE_CODES=(.+)$/m.exec(devVars)?.[1]?.split(/[\s,]+/)[0];
-  if (!code) throw new Error("No local test invite code in .dev.vars");
+  if (!code) throw new Error(`No eval invite code in ${secretsFile}`);
   const login = await api<{ authenticated: boolean }>("/api/auth/login", { method: "POST", body: { code } });
   if (!login.json.authenticated) throw new Error("local sign-in failed");
 }

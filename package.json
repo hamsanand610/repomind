@@ -18,7 +18,8 @@
     "eval:server": "wrangler dev --config wrangler.eval.jsonc --port 8799 --ip 127.0.0.1 --persist-to .wrangler/eval-state --test-scheduled",
     "eval": "node --disable-warning=ExperimentalWarning eval/run.ts",
     "eval:keyword": "node --disable-warning=ExperimentalWarning eval/keyword.ts",
-    "eval:context": "node --disable-warning=ExperimentalWarning eval/context.ts"
+    "eval:context": "node --disable-warning=ExperimentalWarning eval/context.ts",
+    "eval:scale": "node --disable-warning=ExperimentalWarning eval/scale.ts"
   },
   "dependencies": {
     "react": "^19.2.8",

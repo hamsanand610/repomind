@@ -1,0 +1,47 @@
+/**
+ * Isolated evaluation deployment on Cloudflare (Free plan), used to measure
+ * real Worker CPU, D1 rows and indexing time. It runs the PRODUCTION Worker
+ * code (no eval-only endpoints) against its own D1 database, the separate
+ * "repomind-eval" Vectorize index and its own eval-only secrets (stored in
+ * the git-ignored eval-remote.local). Never bind production resources here.
+ *
+ *   npx wrangler deploy --config wrangler.eval-remote.jsonc
+ *   npx wrangler delete --config wrangler.eval-remote.jsonc   # when done
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "repomind-eval",
+	"main": "worker/index.ts",
+	"compatibility_date": "2026-10-06",
+	"workers_dev": true,
+	"preview_urls": false,
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "repomind-eval-db",
+			"database_id": "20db96ca-0ff7-4930-9a76-3995f1c014ba",
+			"migrations_dir": "migrations"
+		}
+	],
+	"vectorize": [
+		{
+			"binding": "VECTORIZE",
+			"index_name": "repomind-eval"
+		}
+	],
+	"ai": {
+		"binding": "AI"
+	},
+	"triggers": {
+		"crons": ["* * * * *"]
+	},
+	"vars": {
+		"EMBEDDING_MODEL": "@cf/qwen/qwen3-embedding-0.6b",
+		"EMBEDDING_DIMS": "512",
+		"LLM_MODEL": "@cf/google/gemma-4-26b-a4b-it",
+		"DAILY_NEURON_BUDGET": "3500",
+		"MAX_CHUNKS_PER_REPO": "1500",
+		"MAX_REPOS_PER_OWNER": "5",
+		"MAX_STORED_VECTORS": "4000"
+	}
+}

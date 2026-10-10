@@ -34,6 +34,44 @@ Re-check before relying on any figure; limits change. Policy: [ADR 0001 §4](adr
 - **Embedding a repository at the chunk cap** (about 520k tokens at an assumed 3.5 characters per token): about 560 Neurons with qwen3-embedding or bge-m3.
 - **One answer** with about 6k input and 600 output tokens: roughly 46–283 Neurons depending on the model, which is tens to a few hundred answers a day. Reasoning tokens would add to this.
 
+## Measured on Cloudflare (2026-10-10)
+
+These numbers come from the isolated evaluation deployment running the production code; see [eval-results.md](eval-results.md#reliability-and-scale-evaluation-2026-10-10).
+
+**Worker CPU (from `wrangler tail`):**
+- Indexing and embedding steps: p50 12–18 ms, p99 54 ms, max 123 ms.
+- Answers: p50 29 ms; searches: 6 ms.
+- No `exceededCpu` or `exceededMemory` outcomes in about 330 invocations, although the documented limit is 10 ms.
+- RepoMind does not rely on that leniency. Indexing and embedding steps both have crash guards: a step killed repeatedly shrinks its batch, then skips that file or chunk. Skipped files show "Could not be processed within free-tier limits"; skipped chunks stay searchable by keyword.
+
+**D1:**
+- About **8 rows written per chunk** to index and embed. A 1,500-chunk repository costs about 12,000 of the 100,000 rows written per day, shared by the account.
+- About 100 rows read per chunk per indexing cycle, mostly progress polling: about 150,000 of the 5 million per day.
+
+**Workers AI:**
+- About 0.6 Neurons per chunk on RepoMind's conservative ledger, and about 25 per answer.
+- A 1,500-chunk repository needs about 1,000 Neurons (10% of the daily 10,000).
+- When the allowance runs out, embedding pauses until 00:00 UTC and answers return the relevant passages instead.
+
+**Vectorize:**
+- New vectors become queryable 76–141 s after writing.
+- Storage is the tightest Free limit: 5M stored dimensions per account, about 9,765 vectors at 512 dimensions, shared by every index.
+- Embedding stops once an index would exceed `MAX_STORED_VECTORS` (default 7,812, which is 80%). Keyword search keeps working, and the UI says to delete a repository to make room.
+
+**Limits kept, with the reasons shown in the UI:**
+
+| Limit | Value | When it applies |
+|---|---|---|
+| Chunks per repository | 1,500 | Above that, the repository is indexed partially, in priority order |
+| Rejected outright | above 4× the chunk limit | — |
+| File size | 400 KB | Larger files are skipped |
+| Supported files per repository | 2,000 | Checked in the browser before adding |
+| Repositories per account | 5 | — |
+
+**Usage on 2026-10-10, from the ledgers:**
+- **Workers AI:** about 6,900 of 10,000 Neurons (production 1,013, local evaluation about 3,270, Cloudflare evaluation about 2,600).
+- **D1 rows written:** about 41,000 of 100,000 (production about 11,000, evaluation about 30,000 including deletion).
+
 ## Unknowns that block design decisions
 
 1. The **queue consumer CPU limit on Free.** The limits page lists 10 ms for HTTP and Cron only.
