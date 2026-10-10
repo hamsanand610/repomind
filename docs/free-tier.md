@@ -41,7 +41,14 @@ These numbers come from the isolated evaluation deployment running the productio
 **Worker CPU (from `wrangler tail`):**
 - Indexing and embedding steps: p50 12–18 ms, p99 54 ms, max 123 ms.
 - Answers: p50 29 ms; searches: 6 ms.
-- No `exceededCpu` or `exceededMemory` outcomes in about 330 invocations, although the documented limit is 10 ms.
+- Code intelligence, on axios with a warm isolate:
+  - architecture overview 17–32 ms;
+  - symbol lookup 2–20 ms (60 ms for the first call in a fresh isolate);
+  - importers 4–12 ms;
+  - file outline and imports 6–8 ms;
+  - keyword search 2–5 ms.
+- These read endpoints use no AI and write only rate-limit counters. They read a bounded number of rows: the full-text match runs first, then a capped number of passages and at most 6 whole files are read.
+- No `exceededCpu` or `exceededMemory` outcomes in about 450 captured invocations, although the documented limit is 10 ms.
 - RepoMind does not rely on that leniency. Indexing and embedding steps both have crash guards: a step killed repeatedly shrinks its batch, then skips that file or chunk. Skipped files show "Could not be processed within free-tier limits"; skipped chunks stay searchable by keyword.
 
 **D1:**
@@ -68,9 +75,18 @@ These numbers come from the isolated evaluation deployment running the productio
 | Supported files per repository | 2,000 | Checked in the browser before adding |
 | Repositories per account | 5 | — |
 
-**Usage on 2026-10-10, from the ledgers:**
-- **Workers AI:** about 6,930 of 10,000 Neurons (production 1,013, local evaluation about 3,270, Cloudflare evaluation 2,653).
-- **D1 rows written:** about 41,000 of 100,000 (production about 11,000, evaluation about 30,000 including deletion).
+**Usage on 2026-10-10, from the ledgers and `wrangler d1 info` (17:50 UTC):**
+- **Workers AI:** about 7,500 of 10,000 Neurons:
+  - production 1,577;
+  - local evaluation about 3,270;
+  - Cloudflare evaluation 2,653.
+
+  The code-intelligence evaluation used none.
+- **D1 rows written:** about 78,500 of 100,000:
+  - production 22,856 (rolling 24 hours);
+  - evaluation database 55,689, of which about 22,000 came from the code-intelligence passes, including deletion.
+- **D1 rows read:** about 880,000 of 5 million.
+- **Vectorize:** 1,633 vectors at 512 dimensions, about 17% of the 5M stored dimensions.
 
 ## Unknowns that block design decisions
 

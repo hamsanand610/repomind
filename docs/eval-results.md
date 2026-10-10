@@ -228,3 +228,135 @@ This evaluation follows two failures reported from the live app:
 - **Sample size:** one run per question at temperature 0.1; three indexed repositories and two rejected ones.
 - **Leniency over time:** CPU leniency was observed over about 330 invocations; it is not a documented guarantee.
 - **Free quotas are account-wide:** the evaluation shared them with production. Totals for the day are in [free-tier.md](free-tier.md).
+
+# Code intelligence evaluation (2026-10-10)
+
+**What is measured:** each feature separately, never one combined score. The features are the architecture overview, symbol definitions and usages, imports of a file, importers of a file, and declared dependencies. Every returned line is checked against the raw file at the pinned commit.
+
+**Where it ran:**
+1. **In process** (`npm run eval:code`): the production ingestion pipeline writes into SQLite with the same schema and FTS5 table as D1. No AI is used.
+2. **On Cloudflare:** the isolated evaluation deployment with `DAILY_NEURON_BUDGET=0`, so no Neurons were spent. The script is `eval/code-intel-remote.ts`. Worker CPU comes from `wrangler tail`.
+
+## Repositories (pinned)
+
+| Repository | Main languages | Files indexed | Index |
+|---|---|---|---|
+| `hamsanand610/Portfolio_hams` @ `c9670b8` | HTML, CSS, JavaScript | 32 | full |
+| `santosharron/3D-Mars-landing-page` @ `f2bd1e0` | JavaScript (Three.js from a CDN) | 5 | full |
+| `expressjs/cors` @ `5317ebe` | JavaScript | 17 | full |
+| `spf13/cobra` @ `adbc881` | Go | 62 | full |
+| `pallets/click` @ `2247b35` | Python | 171 | full |
+| `axios/axios` @ `f694ecd` | JavaScript, TypeScript declarations | 229 of 463 | **partial** |
+| `babel/website` @ `eb2e026` | Markdown, TypeScript/React | 380 of 507 | **partial** |
+
+## Results per feature (final code, in process)
+
+The expected answers in `eval/code-intel-dataset.ts` were written from `grep` over the raw files, not from the extractor's output.
+
+| Feature | Measure | Result |
+|---|---|---|
+| Symbol definitions | Expected definition found at the exact line | **49/49** |
+| | Right kind (function, class, method, struct…) | 49/49 |
+| | Right enclosing class or type | 9/9 |
+| | Test-only helpers labelled as tests | 2/2 |
+| | Precision: returned definitions that are real definition lines | **62/62** |
+| Usages | Returned usage lines that contain the name (first 25 per name) | **504/504** |
+| | Names used only in tests, or only in source, labelled correctly | 3/3 |
+| Missing names | No results for absent names and names defined only in another indexed repository | **7/7** |
+| Imports of a file | Expected imports listed with the right target or kind | **32/32** |
+| | Returned imports whose line holds the specifier and whose target exists | 73/73 |
+| Importers | Expected importing files found | **16/16** |
+| | Returned importers whose line really imports the file | 42/42 |
+| Dependencies | Cited at the right manifest line | 8/8 |
+| | "Imported or not" correct | 8/8 |
+| Overview | Main language | 7/7 |
+| | Purpose quoted from README or manifest | 7/7 |
+| | Entry point, with the right basis (from the files vs inferred) | 7/7 |
+| | Partial index flagged | 7/7 |
+| | CDN libraries detected (Portfolio, Mars) | 4/4 |
+| | Citations that exist and support their quoted text | **169/169** |
+
+**These cases were used while building the features.** Every defect they exposed was fixed, so 100% on them is not an independent measure. The random samples below are.
+
+## Held-out random samples
+
+Definitions and relative imports were picked at random with a fixed seed. They were found by plain line patterns over the raw files (`^func`, `def name(`, `function name(`, `from .x import`…), independently of the extractor.
+
+| Sample | Definitions found at the exact line | Relative imports resolved to an existing file |
+|---|---|---|
+| Seed 20261010, 15 per repository | **87/88** on first run; 88/88 after fix 13 below | 43/43 |
+| Seed 7, 40 per repository (drawn after fix 13) | **196/201 (98%)** on first run; 197/201 after fix 14 | 94/94 |
+
+The 4 remaining misses are all `cli` in click: a local function defined more than 100 times across the tests. The response returns over 100 definitions and is marked as truncated. The UI says the list is incomplete.
+
+## Measured on Cloudflare (Workers Free, no AI)
+
+**Pass 1:** cobra and axios, on the build before fixes 13 and 14. **Pass 2:** axios read twice, on the final build, one request a second so that `wrangler tail` kept every event.
+
+| Measure | Result |
+|---|---|
+| Answers checked through the live API | Pass 1: architecture 8/8, definitions 15/15, missing 2/2, importers 6/6, imports 13/13, search 10/10. Pass 2: 8/8, 16/16 (including `AxiosHeaders`, fix 13), 2/2, 6/6, 22/22, 10/10 |
+| Outcomes | Every request returned 200. 0 `exceededCpu`, 0 `exceededMemory`, 0 exceptions |
+| Worker CPU per request (pass 2, all 40 reads captured) | Architecture p50 24 ms, max 32 ms. Symbols p50 17 ms, max 60 ms: the first `Axios` lookup in a fresh isolate; the same call took 17 ms later. Importers 4–12 ms; file with outline and imports 6–8 ms; keyword search 2–5 ms. Indexing steps p50 11 ms, p99 35 ms |
+| Latency seen by the client (including the network) | p50 170–280 ms per request |
+| Keyword-search SQL, old vs new form, on D1 (6 query pairs) | Same rows and same rows read (477–2,374): D1 already ran the match first. SQL time equal or lower for the new form (for example 19.4 → 9.9 ms), single samples |
+| D1 rows written | About 22,000 for both passes: indexing 2,806 chunks without embeddings, the requests, and deletion |
+| Workers AI | **0 Neurons** (eval ledger unchanged at 2,653) |
+| Vectorize | Unchanged (no vectors written) |
+
+**The 10 ms CPU limit:** the code-intelligence endpoints use 2–32 ms of CPU on a warm isolate for axios, the largest evaluated repository. That is above the documented 10 ms per request on Free, like the indexing steps measured earlier. None were stopped. If Cloudflare enforced the documented limit strictly, the heaviest lookups would fail with an error. They would not return wrong data.
+
+**Cleanup:** the recreated evaluation Worker's cron trigger did not fire during this session. Production's cron fired normally. Deleting a repository removes its chunks inline, but the last step (file and version rows) waits for the cron. That step was run by hand on the evaluation database for two versions. The database was left empty and the Worker deleted.
+
+## Defects found and fixed
+
+Each fix has a regression test (`tests/unit/code-intel.test.ts`, `code-intel-flow.test.ts`, `ingest/admission.test.ts`, `ui-states.test.ts`) or a dataset case.
+1. **Common names lost their definitions.** Candidates were truncated, and a case-insensitive filter was too noisy. Fixed with a case-sensitive definition-shape prefilter and code before docs.
+2. **A method was not found** when its class header was in another chunk. Candidate files are now read whole.
+3. **A Python multi-line signature** ended at the `)` line.
+4. **Go `const` entries and C macros** had wrong end lines.
+5. **A class-field arrow function ending in `;`** was rejected.
+6. **`this.placeMarker = function`** (Mars) was missed.
+7. **Admission treated babel/website's React code as documentation** (decision D23).
+8. **The axios README purpose was HTML attributes.** The summary now prefers a README paragraph that names the project, otherwise the manifest description.
+9. **Overview noise:**
+   - `types` fields and an empty `main` listed as entry points;
+   - duplicate dependencies, entry-point imports and purpose quotes;
+   - the root directory missing from the directory table.
+10. **A `<link>` tag spread over several lines** was cited at its first line, not the line holding the URL.
+11. **Long paths overflowed** the page at 375 px width.
+12. **A slow local FTS plan:** 150 ms–2.7 s per query (decision D22).
+13. **A regular expression literal containing a backtick** (in axios `lib/core/AxiosHeaders.js`) was read as the start of a template string. It hid everything after it, including `class AxiosHeaders`. Found by the held-out sample.
+14. **`self.name = …` assignments used up the definition candidates**, so click's `def name(self)` in `src/click/types.py` was missed. Passages with a definition keyword now rank first. Found by the held-out sample.
+
+## What is supported
+
+- **Definitions** (file outline and symbol search):
+  - *Evaluated on real repositories:* JavaScript, TypeScript (`.d.ts` files as declarations), JSX/TSX components, Python and Go.
+  - *Covered by unit tests only:* Rust, Java, Ruby, PHP, C and shell.
+  - *Handled with the closest family's rules but not tested:* Kotlin, Scala, Groovy, C#, C++, Objective-C, and Vue/Svelte/Astro files.
+  - Other languages are reported as not analysed.
+- **Imports:**
+  - JavaScript and TypeScript: `import`, `export … from` and `require`, with relative paths, extensions, `index` files and the `@/`, `~/` and `@site/` aliases.
+  - Python: `import` and `from`, relative imports and the `src/` layout.
+  - Go: imports within the module path from `go.mod`.
+  - HTML: `<script src>` and `<link href>`, including CDN URLs.
+  - CSS: `@import`.
+  - Imports computed at run time are counted and flagged, not followed.
+- **Manifests:** `package.json`, `composer.json`, `pyproject.toml`, `setup.py`, `requirements*.txt`, `Cargo.toml`, `go.mod` and `Gemfile`, with scopes (runtime, dev, peer, optional, build, indirect).
+- **Relationships:**
+  - definition;
+  - usage (import or reference; source, test, docs or declaration);
+  - file imports file, package, built-in or remote URL;
+  - files importing a file;
+  - dependency declared at a manifest line, and whether any indexed file imports it.
+
+  **Not supported:** a call graph, type hierarchy or run-time dispatch.
+
+## Limits of this evaluation
+
+- **Extraction:** it is line based, not a full parser, so unusual formatting can be missed. The held-out recall was 98–99%.
+- **Bounded reads:** each request reads a bounded number of passages. Names defined or used in very many places return a truncated list, and the UI says so.
+- **Partial indexes:** only indexed files are analysed. A definition in a file left out of a partial index is not found, and the UI says this may be the reason.
+- **Aliases:** `tsconfig.json` `paths` and bundler aliases other than `@/`, `~/` and `@site/` are not read; such imports show as unresolved.
+- **Sample size:** seven repositories; definitions and imports are evaluated on JavaScript, TypeScript, Python, Go and HTML only.

@@ -4,7 +4,13 @@ RepoMind is a read-only assistant that answers questions about a software projec
 
 It never modifies, commits to or executes the repositories it reads.
 
-**Status:** deployed MVP. Public GitHub repositories are indexed at a pinned commit, with keyword and semantic search, grounded Q&A with server-validated citations, re-index and delete. Evaluation: [docs/eval-results.md](docs/eval-results.md).
+**Status:** deployed MVP. Public GitHub repositories are indexed at a pinned commit, with keyword and semantic search, grounded Q&A with server-validated citations, re-index and delete. Code navigation is computed from the indexed files without AI. It covers:
+- an architecture overview (purpose, languages, entry points, dependencies, directories, config);
+- symbol definitions and usages;
+- file outlines;
+- imports and the files that import a file.
+
+Every statement links to its lines. Evaluation: [docs/eval-results.md](docs/eval-results.md).
 
 ## Stack
 
@@ -31,6 +37,7 @@ See [ADR 0001](docs/adr/0001-architecture-baseline.md) for the decisions and [do
 | `npm run eval:keyword` | Keyword-search evaluation on pinned public repositories, no AI quota |
 | `npm run eval:context` | Repository-context evaluation (overview, languages, entry point, feature, absent, false premise, injection) on three pinned repositories; needs `eval:server` |
 | `npm run eval:scale` | Larger-repository evaluation on Cloudflare against the isolated eval deployment (`wrangler.eval-remote.jsonc`): admission, indexing time, search, answers with checked citations, UI states, AI usage and D1 rows |
+| `npm run eval:code` | Code-intelligence evaluation (definitions, usages, imports, importers, dependencies, overview, plus a random held-out sample) on seven pinned repositories, in process, no AI quota; `eval/code-intel-remote.ts` repeats it on the isolated Cloudflare deployment |
 | `npm run deploy` | Build and deploy. Requires Cloudflare login; deploy only when authorized. |
 
 ## Layout
@@ -39,7 +46,8 @@ See [ADR 0001](docs/adr/0001-architecture-baseline.md) for the decisions and [do
 src/        React app (src/styles/tokens.css holds the design tokens)
 worker/     Cloudflare Worker: app.ts (error boundary), router.ts, routes.ts, http.ts
 shared/     Pure TypeScript shared by the Worker and the browser (API contract, URL validation,
-            ingest/: path safety, filtering, decoding, secret redaction, chunking)
+            ingest/: path safety, filtering, decoding, secret redaction, chunking;
+            code/: definitions, imports and manifests for code navigation)
 tests/      unit/ (Node) and integration/ (built output in workerd)
 bench/      E1 benchmark harness and deterministic synthetic fixture (results git-ignored)
 docs/       Architecture decisions and free-tier policy

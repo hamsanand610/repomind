@@ -19,7 +19,8 @@
     "eval": "node --disable-warning=ExperimentalWarning eval/run.ts",
     "eval:keyword": "node --disable-warning=ExperimentalWarning eval/keyword.ts",
     "eval:context": "node --disable-warning=ExperimentalWarning eval/context.ts",
-    "eval:scale": "node --disable-warning=ExperimentalWarning eval/scale.ts"
+    "eval:scale": "node --disable-warning=ExperimentalWarning eval/scale.ts",
+    "eval:code": "node --disable-warning=ExperimentalWarning eval/code-intel.ts"
   },
   "dependencies": {
     "react": "^19.2.8",
