@@ -52,16 +52,19 @@ const CANDIDATES = 90;
 export async function searchChunks(db: Database, versionId: string, input: string, mode: "all" | "any", limit: number): Promise<ChunkHit[]> {
   const query = ftsQuery(input, mode);
   if (!query) return [];
+  // The full-text match runs first and the version filter after it. Joined the
+  // other way, SQLite walks every chunk of the version and re-evaluates the
+  // match for each one (measured 150 ms to 2.7 s instead of about 1 ms).
   const { results } = await db
     .prepare(
       `SELECT c.id AS chunkId, c.ordinal AS ordinal, f.path AS path, c.start_line AS startLine, c.end_line AS endLine,
-              snippet(chunks_fts, 0, char(1), char(2), '…', 24) AS snippet, c.text AS text,
-              bm25(chunks_fts, 1.0, 0.6) AS score
-       FROM chunks_fts
-       JOIN chunks c ON c.rowid = chunks_fts.rowid
+              m.snippet AS snippet, c.text AS text, m.score AS score
+       FROM (SELECT rowid, snippet(chunks_fts, 0, char(1), char(2), '…', 24) AS snippet, bm25(chunks_fts, 1.0, 0.6) AS score
+             FROM chunks_fts WHERE chunks_fts MATCH ?) m
+       JOIN chunks c ON c.rowid = m.rowid
        JOIN files f ON f.version_id = c.version_id AND f.ordinal = c.ordinal
-       WHERE chunks_fts MATCH ? AND c.version_id = ?
-       ORDER BY score
+       WHERE c.version_id = ?
+       ORDER BY m.score
        LIMIT ?`,
     )
     .bind(query, versionId, Math.max(limit, CANDIDATES))

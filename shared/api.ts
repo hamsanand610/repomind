@@ -2,9 +2,12 @@
  * Wire contract between the RepoMind Worker API and the browser client.
  * Keep this file free of runtime-specific APIs so both sides can import it.
  */
+import type { DynamicImport, ImportStatement, Resolution } from "./code/imports.ts";
+import type { DependencyScope, Ecosystem } from "./code/manifests.ts";
+import type { SymbolDefinition } from "./code/symbols.ts";
 import type { AdmissionReport } from "./ingest/admission.ts";
 
-export type { AdmissionReport };
+export type { AdmissionReport, DynamicImport, ImportStatement, Resolution, SymbolDefinition };
 
 /** Machine-readable error codes. Clients branch on these, never on message text. */
 export type ApiErrorCode =
@@ -126,6 +129,94 @@ export interface FileContentResponse {
   file: FileEntry;
   content: string;
   githubUrl: string;
+  /** Definitions in this file; null when the language is not supported. */
+  outline: SymbolDefinition[] | null;
+  /** Imports in this file and how each resolves; null when imports are not analysed for the language. */
+  imports: ResolvedImport[] | null;
+  /** Imports whose target is computed at run time and cannot be resolved statically. */
+  dynamicImports: DynamicImport[];
+}
+
+/** A file and line range in the indexed commit; every displayed relationship points at one. */
+export interface SourceRef {
+  path: string;
+  startLine: number;
+  endLine: number;
+}
+
+export interface ResolvedImport extends ImportStatement {
+  resolution: Resolution;
+}
+
+export interface SymbolResult extends SourceRef {
+  name: string;
+  kind: SymbolDefinition["kind"];
+  container: string | null;
+  signature: string;
+  /** False when the end of the body was not found (very long definitions). */
+  endKnown: boolean;
+  /** "declaration": a type declaration file (.d.ts), which describes but does not implement. */
+  role: "source" | "test" | "docs" | "declaration";
+}
+
+export interface SymbolReference extends SourceRef {
+  kind: "import" | "reference";
+  role: "source" | "test" | "docs" | "declaration";
+  text: string;
+}
+
+export interface SymbolsResponse {
+  commitSha: string;
+  name: string;
+  definitions: SymbolResult[];
+  references: SymbolReference[];
+  /** More passages mention the name than were examined. */
+  truncated: boolean;
+  /** Languages where the name occurs but definitions cannot be detected. */
+  unsupportedLanguages: string[];
+}
+
+export interface ImporterResult extends SourceRef {
+  specifier: string;
+  kind: ImportStatement["kind"];
+}
+
+export interface ImportersResponse {
+  commitSha: string;
+  path: string;
+  importers: ImporterResult[];
+  /** False when the language has no import analysis. */
+  supported: boolean;
+  truncated: boolean;
+}
+
+/** Facts are quoted or counted from files; inferences come from conventions such as folder names. */
+export type Basis = "explicit" | "inferred";
+
+export interface ArchitectureDependency {
+  name: string;
+  version: string | null;
+  scope: DependencyScope;
+  ecosystem: Ecosystem;
+  declaredIn: SourceRef;
+  /** What the package is (not what the repository does with it). */
+  label: string | null;
+  /** Import statements found for it; null when its ecosystem's imports are not analysed. */
+  usage: { files: number; examples: SourceRef[] } | null;
+}
+
+export interface ArchitectureResponse {
+  commitSha: string;
+  coverage: { partial: boolean; filesIndexed: number; filesSelected: number; candidateFiles: number | null };
+  summary: Array<{ text: string; basis: Basis; refs: SourceRef[] }>;
+  purpose: Array<{ source: "readme" | "manifest"; title: string | null; text: string; ref: SourceRef }>;
+  languages: Array<{ language: string; files: number; lines: number }>;
+  dependencies: ArchitectureDependency[];
+  remoteScripts: Array<{ url: string; library: string | null; ref: SourceRef }>;
+  entryPoints: Array<{ path: string; reason: string; basis: Basis; ref: SourceRef | null; imports: ResolvedImport[]; dynamicImports: number }>;
+  configFiles: Array<{ path: string; category: string }>;
+  directories: Array<{ path: string; files: number; lines: number; languages: string[]; role: string | null; basis: Basis | null; ref: SourceRef | null }>;
+  limitations: string[];
 }
 
 export interface SearchHit {

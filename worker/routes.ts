@@ -37,6 +37,7 @@ import {
 import { dayBucket, enforceLimit, minuteBucket, quarterHourBucket } from "./quota.ts";
 import type { RequestContext, Route } from "./router.ts";
 import { commitUrl } from "./ask.ts";
+import { architecture, fileCodeInfo, findImporters, findSymbol } from "./code-intel.ts";
 import { listFiles, readFile, searchChunks, searchPaths } from "./search.ts";
 
 const SMALL_BODY = 4 * 1024;
@@ -60,6 +61,9 @@ export const apiRoutes: readonly Route[] = [
   { method: "GET", pattern: "/api/repos/:id/files", handler: authed(getFiles) },
   { method: "GET", pattern: "/api/repos/:id/file", handler: authed(getFile) },
   { method: "GET", pattern: "/api/repos/:id/search", handler: authed(search) },
+  { method: "GET", pattern: "/api/repos/:id/symbols", handler: authed(symbols) },
+  { method: "GET", pattern: "/api/repos/:id/importers", handler: authed(importers) },
+  { method: "GET", pattern: "/api/repos/:id/architecture", handler: authed(getArchitecture) },
   { method: "POST", pattern: "/api/repos/:id/ask", handler: authed(ask) },
 ];
 
@@ -279,11 +283,34 @@ async function getFile(context: RequestContext, ownerId: string): Promise<Respon
   if (path.length === 0 || path.length > 1024) throw new HttpError(400, "invalid_request", "A file path is required.");
   const { repo, version } = await activeVersion(context, ownerId);
   const { file, content } = await readFile(context.services.db, version.id, path);
+  const code = file.status === "indexed" ? await fileCodeInfo(context.services.db, version, file.path, file.language, content) : { outline: null, imports: null, dynamicImports: [] };
   return jsonResponse(
-    { commitSha: version.commit_sha, file, content, githubUrl: commitUrl(repo, version.commit_sha, file.path) } satisfies FileContentResponse,
+    { commitSha: version.commit_sha, file, content, githubUrl: commitUrl(repo, version.commit_sha, file.path), ...code } satisfies FileContentResponse,
     200,
     context.requestId,
   );
+}
+
+async function symbols(context: RequestContext, ownerId: string): Promise<Response> {
+  const { db, now } = context.services;
+  const q = (context.url.searchParams.get("q") ?? "").trim();
+  if (q.length === 0 || q.length > 200) throw new HttpError(400, "invalid_request", "Enter a symbol name.");
+  await enforceLimit(db, `search:${ownerId}`, minuteBucket(now()), 60, "Too many searches. Wait a minute and try again.");
+  const { version } = await activeVersion(context, ownerId);
+  return jsonResponse(await findSymbol(db, version, q), 200, context.requestId);
+}
+
+async function importers(context: RequestContext, ownerId: string): Promise<Response> {
+  const path = context.url.searchParams.get("path") ?? "";
+  if (path.length === 0 || path.length > 1024) throw new HttpError(400, "invalid_request", "A file path is required.");
+  await enforceLimit(context.services.db, `search:${ownerId}`, minuteBucket(context.services.now()), 60, "Too many searches. Wait a minute and try again.");
+  const { version } = await activeVersion(context, ownerId);
+  return jsonResponse(await findImporters(context.services.db, version, path), 200, context.requestId);
+}
+
+async function getArchitecture(context: RequestContext, ownerId: string): Promise<Response> {
+  const { version } = await activeVersion(context, ownerId);
+  return jsonResponse(await architecture(context.services.db, version, parseAdmission(version)), 200, context.requestId);
 }
 
 async function search(context: RequestContext, ownerId: string): Promise<Response> {
