@@ -25,12 +25,14 @@ export function relativeTime(epochMs: number, now = Date.now()): string {
 /**
  * waiting: indexing is paused (rate limit, retry backoff); nothing new is searchable yet.
  * semantic_paused: searchable now; only the semantic index is paused (AI allowance, storage).
+ * uploading: a ZIP upload is in progress; its files come from the browser that chose it.
  */
-export type RepoState = 'indexing' | 'embedding' | 'ready' | 'failed' | 'waiting' | 'semantic_paused'
+export type RepoState = 'indexing' | 'embedding' | 'ready' | 'failed' | 'waiting' | 'semantic_paused' | 'uploading'
 
 /** One overall state for badges, derived only from real server counters. */
 export function repoState(repo: RepoSummary, now = Date.now()): RepoState {
   const latest = repo.latest
+  if (latest?.status === 'indexing' && repo.source === 'zip') return 'uploading'
   if (latest?.status === 'indexing') return latest.nextAttemptAt > now ? 'waiting' : 'indexing'
   if (latest?.status === 'failed' && !repo.active) return 'failed'
   const active = repo.active
@@ -45,6 +47,12 @@ export const STATE_LABEL: Record<RepoState, string> = {
   failed: 'Failed',
   waiting: 'Paused',
   semantic_paused: 'Ready · semantic search paused',
+  uploading: 'Uploading',
+}
+
+/** "owner/name" for GitHub repositories, the name alone for uploads. */
+export function repoTitle(repo: RepoSummary): string {
+  return repo.source === 'zip' ? repo.name : `${repo.owner}/${repo.name}`
 }
 
 /** True when the searchable index leaves supported files out (budget, limits, errors). */
@@ -96,4 +104,10 @@ export const SKIP_REASON_LABEL: Record<string, string> = {
   too_deep: 'Path too deep',
   segment_too_long: 'Path too long',
   empty: 'Empty path',
+  symlink: 'Symbolic link (never followed)',
+  special_file: 'Device or special file',
+  os_metadata: 'macOS archive metadata (__MACOSX)',
+  unsupported_compression: 'Compressed with a method other than deflate',
+  suspicious_compression: 'Compresses suspiciously well (possible ZIP bomb)',
+  unsupported_name_encoding: 'File name is not valid UTF-8',
 }

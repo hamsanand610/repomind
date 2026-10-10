@@ -11,8 +11,12 @@ import type {
   SearchResponse,
   SessionResponse,
   SymbolsResponse,
+  UploadBatchRequest,
+  UploadBatchResponse,
+  UploadStatusResponse,
 } from '../../shared/api.ts'
 import type { Discovery } from '../../shared/discovery.ts'
+import type { UploadManifest } from '../../shared/zip/manifest.ts'
 
 /**
  * A failed API call with a message that is safe to render. Server messages are
@@ -94,6 +98,11 @@ export const api = {
   symbols: (id: string, q: string) => request<SymbolsResponse>('GET', `${repoPath(id)}/symbols?q=${encodeURIComponent(q)}`),
   importers: (id: string, path: string) => request<ImportersResponse>('GET', `${repoPath(id)}/importers?path=${encodeURIComponent(path)}`),
   architecture: (id: string) => request<ArchitectureResponse>('GET', `${repoPath(id)}/architecture`),
+  createUpload: (manifest: UploadManifest) => request<RepoSummary>('POST', '/api/uploads', manifest),
+  newUploadVersion: (id: string, manifest: UploadManifest) => request<RepoSummary>('POST', `${repoPath(id)}/upload`, manifest),
+  uploadStatus: (id: string) => request<UploadStatusResponse>('GET', `${repoPath(id)}/upload`),
+  uploadFiles: (id: string, batch: UploadBatchRequest, signal?: AbortSignal) => request<UploadBatchResponse>('POST', `${repoPath(id)}/upload/files`, batch, signal),
+  cancelUpload: (id: string, versionId: string) => request<RepoSummary>('POST', `${repoPath(id)}/upload/cancel`, { versionId }),
 }
 
 export function errorMessage(error: unknown): string {

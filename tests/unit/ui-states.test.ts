@@ -9,6 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { AdmissionReport, ArchitectureResponse, RepoSummary, SymbolsResponse, VersionSummary } from "../../shared/api.ts";
 import { StatusBadge } from "../../src/components/ui.tsx";
+import { UploadPanel } from "../../src/components/upload.tsx";
 import { isPartial, repoState } from "../../src/lib/format.ts";
 import { RepoCard } from "../../src/pages/ReposPage.tsx";
 import { ArchitectureBody } from "../../src/pages/repo/ArchitecturePanel.tsx";
@@ -25,13 +26,13 @@ const admission = (decision: AdmissionReport["decision"], message: string): Admi
 function version(overrides: Partial<VersionSummary>): VersionSummary {
   return {
     id: "v", commitSha: "a1b2c3d".padEnd(40, "0"), ref: "main", status: "ready", filesTotal: 10, filesProcessed: 10, chunksTotal: 50,
-    chunksEmbeddable: 50, chunksEmbedded: 50, embeddingNote: null, errorCode: null, errorMessage: null, nextAttemptAt: 0, createdAt: 0,
+    chunksEmbeddable: 50, chunksEmbedded: 50, embeddingNote: null, errorCode: null, errorMessage: null, nextAttemptAt: 0, uploadExpiresAt: null, createdAt: 0,
     finishedAt: Date.now(), admission: admission("full", "All 10 supported files fit within the 1,500-chunk limit."), indexSkips: {}, coverage: "full", ...overrides,
   };
 }
 
 const repo = (name: string, active: VersionSummary | null, latest: VersionSummary | null = active): RepoSummary => ({
-  id: `r_${name}`, owner: "demo", name, ref: null, githubUrl: `https://github.com/demo/${name}`, createdAt: 0, updatedAt: Date.now(), active, latest,
+  id: `r_${name}`, source: "github", owner: "demo", name, ref: null, githubUrl: `https://github.com/demo/${name}`, createdAt: 0, updatedAt: Date.now(), active, latest,
 });
 
 const STATES = {
@@ -138,6 +139,62 @@ describe("code intelligence views", () => {
     })));
     expect(js).toContain("No functions, classes or other definitions were found in this file.");
     expect(js).toContain("1 import is computed at run time and cannot be followed (line 3).");
+  });
+});
+
+describe("ZIP uploads", () => {
+  const zipVersion = (overrides: Partial<VersionSummary>) =>
+    version({
+      ref: "shop-main.zip",
+      commitSha: "f1e2d3c4".padEnd(40, "0"),
+      admission: {
+        ...admission("full", "All 10 supported files fit within the 1,500-chunk limit."),
+        archive: { fileName: "shop-main.zip", bytes: 48_000, entries: 40, rootFolder: "shop-main", skipped: { ignored_directory: 12, symlink: 1 } },
+      },
+      ...overrides,
+    });
+  const zipRepo = (active: VersionSummary | null, latest: VersionSummary | null = active): RepoSummary => ({
+    ...repo("shop-main", active, latest),
+    source: "zip",
+    owner: "",
+    githubUrl: null,
+  });
+  const uploading = zipRepo(null, zipVersion({ status: "indexing", filesProcessed: 3, filesTotal: 10, uploadExpiresAt: later, finishedAt: null }));
+
+  it("shows an upload in progress as Uploading, never as paused or indexing in the background", () => {
+    expect(badge(uploading).trim()).toBe("Uploading");
+    const page = card(uploading);
+    expect(page).toContain("shop-main ZIP");
+    expect(page).toContain("shop-main.zip · fingerprint f1e2d3c");
+    expect(page).toContain("Files uploaded and indexed 3 / 10");
+    expect(page).not.toContain("github");
+  });
+
+  it("asks for the same ZIP after an interruption, with cancel and the expiry time", () => {
+    const page = text(renderToStaticMarkup(createElement(UploadPanel, { repo: uploading, onChange: () => {} })));
+    expect(page).toContain("Uploading shop-main.zip");
+    expect(page).toContain("Upload interrupted 3 of 10 files arrived");
+    expect(page).toContain("Choose the same ZIP");
+    expect(page).toContain("Cancel upload");
+    expect(page).toContain("An unfinished upload is stopped automatically at");
+    expect(renderToStaticMarkup(createElement(UploadPanel, { repo: zipRepo(zipVersion({})), onChange: () => {} }))).toBe("");
+  });
+
+  it("describes a ready upload by its archive, root folder and browser-side skips, and offers a new version", () => {
+    const page = overview(zipRepo(zipVersion({})));
+    expect(page).toContain("Indexed archive shop-main.zip (fingerprint f1e2d3c)");
+    expect(page).toContain("Every file was inside the folder shop-main/ , so paths are shown relative to it.");
+    expect(page).toContain("13 entries left out while your browser read the archive");
+    expect(page).toContain("Symbolic link (never followed)");
+    expect(page).toContain("Upload a new version");
+    expect(page).toContain("Your ZIP file is not touched.");
+    expect(page).not.toContain("Re-index latest commit");
+  });
+
+  it("explains a cancelled upload while the previous index stays in use", () => {
+    const page = overview(zipRepo(zipVersion({ id: "v_ok" }), zipVersion({ id: "v_cancel", status: "failed", errorCode: "upload_cancelled", errorMessage: "Upload cancelled. Its partial data was removed." })));
+    expect(page).toContain("The latest upload did not finish Upload cancelled. Its partial data was removed.");
+    expect(page).toContain("Searches and answers keep using the previous index (fingerprint f1e2d3c ).");
   });
 });
 

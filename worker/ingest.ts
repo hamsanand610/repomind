@@ -4,6 +4,7 @@ import { identifierWords } from "../shared/ingest/identifiers.ts";
 import { INGEST_LIMITS } from "../shared/ingest/limits.ts";
 import { type ChunkRecord, type IndexedFile, type SkippedFile, processFile } from "../shared/ingest/pipeline.ts";
 import type { Discovery } from "../shared/discovery.ts";
+import { UPLOAD_LIMITS } from "../shared/zip/limits.ts";
 import { AiBusyError, AiQuotaError, type EmbeddingProvider } from "./ai.ts";
 import { GitHubError, type GitHubClient } from "./github.ts";
 import { HttpError } from "./http.ts";
@@ -68,6 +69,8 @@ class DownloadFailure extends Error {
 export interface RepoRow {
   id: string;
   owner_id: string;
+  /** "zip": an uploaded archive; gh_owner is '' and gh_repo is the upload's name. */
+  source: "github" | "zip";
   gh_owner: string;
   gh_repo: string;
   requested_ref: string;
@@ -105,8 +108,11 @@ export interface VersionRow {
   finished_at: number | null;
 }
 
-/** [path, language, size] in processing order; the index is the file ordinal. */
-type PlanEntry = [string, string, number];
+/**
+ * [path, language, size] in processing order; the index is the file ordinal.
+ * Uploaded archives add the file's CRC-32, which every uploaded file must match.
+ */
+export type PlanEntry = [path: string, language: string, size: number, crc32?: number];
 
 export type StepOutcome =
   | { kind: "indexed"; files: number; chunks: number }
@@ -202,10 +208,24 @@ export async function startVersion(
     admitted = [];
   }
 
+  const plan: PlanEntry[] = admitted.map((file) => [file.path, file.language, file.size]);
+  return openVersion(deps, repo, { sha, ref, report, plan, defaultBranch: defaultBranch ?? null, nextAttemptAt: 0 });
+}
+
+/**
+ * Records a new version with its admission report and plan, retiring earlier
+ * failed attempts. A rejected admission opens the version as failed.
+ */
+export async function openVersion(
+  deps: IngestDeps,
+  repo: RepoRow,
+  version: { sha: string; ref: string; report: AdmissionReport; plan: PlanEntry[]; defaultBranch: string | null; nextAttemptAt: number },
+): Promise<string> {
+  const { db } = deps;
+  const { report, plan } = version;
   const now = deps.now();
   const versionId = randomId("v");
   const rejected = report.decision === "rejected";
-  const plan: PlanEntry[] = admitted.map((file) => [file.path, file.language, file.size]);
   await db.batch([
     // Earlier failed attempts are retired, so repeated failures do not pile up.
     db
@@ -213,14 +233,14 @@ export async function startVersion(
       .bind(now, repo.id),
     db
       .prepare(
-        `INSERT INTO versions (id, repo_id, commit_sha, ref, status, admission, files_total, error_code, error_message, created_at, updated_at, finished_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO versions (id, repo_id, commit_sha, ref, status, admission, files_total, error_code, error_message, next_attempt_at, created_at, updated_at, finished_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(versionId, repo.id, sha, ref, rejected ? "failed" : "indexing", JSON.stringify(report), plan.length,
-        rejected ? report.reason : null, rejected ? report.message : null, now, now, rejected ? now : null),
+      .bind(versionId, repo.id, version.sha, version.ref, rejected ? "failed" : "indexing", JSON.stringify(report), plan.length,
+        rejected ? report.reason : null, rejected ? report.message : null, rejected ? 0 : version.nextAttemptAt, now, now, rejected ? now : null),
     db.prepare("INSERT INTO version_plans (version_id, plan) VALUES (?, ?)").bind(versionId, JSON.stringify(plan)),
     db.prepare("UPDATE repos SET latest_version_id = ?, default_branch = COALESCE(?, default_branch), updated_at = ? WHERE id = ?")
-      .bind(versionId, defaultBranch ?? null, now, repo.id),
+      .bind(versionId, version.defaultBranch, now, repo.id),
   ]);
   return versionId;
 }
@@ -231,10 +251,12 @@ export async function runStep(deps: IngestDeps, versionId: string): Promise<Step
   if (!version) return { kind: "idle" };
   const now = deps.now();
 
-  if (version.next_attempt_at > now && version.status !== "failed") {
+  if (version.next_attempt_at > now && (version.status !== "failed" || version.chunks_total > 0)) {
     return { kind: "waiting", untilMs: version.next_attempt_at, reason: version.error_message ?? version.embedding_note ?? "Waiting to retry." };
   }
   if (version.status === "superseded") return cleanupStep(deps, version);
+  // A cancelled or expired upload keeps its version (and message) but not its partial data.
+  if (version.status === "failed" && version.chunks_total > 0) return cleanupStep(deps, version, true);
   if (version.status === "indexing") {
     try {
       return await indexFilesStep(deps, version);
@@ -256,22 +278,16 @@ async function indexFilesStep(deps: IngestDeps, version: VersionRow): Promise<St
   const plan = JSON.parse(planRow?.plan ?? "[]") as PlanEntry[];
   const cursor = version.files_cursor;
   if (cursor >= plan.length) return finalizeVersion(deps, version, repo);
+  // Upload content comes only from the browser (uploads.ts). The background
+  // job reaches an upload only once it has been idle too long.
+  if (repo.source === "zip") return expireUpload(deps, version);
 
-  // Crash guard: count attempts at this cursor before doing the work, because
-  // a step killed by the CPU limit cannot record anything afterwards.
-  const attempts = version.step_cursor === cursor ? version.step_attempts + 1 : 1;
-  await db.prepare("UPDATE versions SET step_cursor = ?, step_attempts = ? WHERE id = ?").bind(cursor, attempts, version.id).run();
-  if (attempts > CRASH_SKIP || version.error_attempts >= MAX_ERROR_ATTEMPTS) {
-    const [path, language, size] = plan[cursor];
-    const reason = attempts > CRASH_SKIP ? "processing_limit" : version.error_code === "download_failed" ? "download_failed" : "processing_error";
-    return commitWindow(deps, version, repo, plan, cursor + 1, [{ status: "skipped", path, reason, language, size }], []);
-  }
-  // After a possible crash or any handled error, go one file at a time to isolate the cause.
-  const maxFiles = attempts > CRASH_RETRY_SINGLE || version.error_attempts > 0 ? 1 : STEP_MAX_FILES;
+  const guard = await beginWindow(deps, version, repo, plan);
+  if ("outcome" in guard) return guard.outcome;
 
   const window: Array<{ ordinal: number; entry: PlanEntry }> = [];
   let bytes = 0;
-  for (let i = cursor; i < plan.length && window.length < maxFiles; i++) {
+  for (let i = cursor; i < plan.length && window.length < guard.maxFiles; i++) {
     if (window.length > 0 && bytes + plan[i][2] > STEP_MAX_BYTES) break;
     window.push({ ordinal: i, entry: plan[i] });
     bytes += plan[i][2];
@@ -295,24 +311,64 @@ async function indexFilesStep(deps: IngestDeps, version: VersionRow): Promise<St
     return { kind: "idle" };
   }
 
+  return indexWindow(
+    deps,
+    version,
+    repo,
+    plan,
+    window.map(({ ordinal, entry }, i): WindowItem => {
+      const download = downloads[i];
+      if (download.status === "rejected") {
+        const tooLarge = download.reason instanceof GitHubError && download.reason.code === "too_large";
+        return tooLarge ? { ordinal, entry, skip: "too_large" } : { ordinal, entry, error: download.reason };
+      }
+      return download.value === null ? { ordinal, entry, skip: "not_found" } : { ordinal, entry, bytes: download.value };
+    }),
+  );
+}
+
+/**
+ * Crash guard shared by GitHub steps and upload batches: attempts at the
+ * cursor are counted before the work, because a step killed by the CPU limit
+ * cannot record anything afterwards. Repeated attempts go one file at a time,
+ * then skip the file with the reason.
+ */
+export async function beginWindow(deps: IngestDeps, version: VersionRow, repo: RepoRow, plan: PlanEntry[]): Promise<{ outcome: StepOutcome } | { maxFiles: number }> {
+  const cursor = version.files_cursor;
+  const attempts = version.step_cursor === cursor ? version.step_attempts + 1 : 1;
+  await deps.db.prepare("UPDATE versions SET step_cursor = ?, step_attempts = ? WHERE id = ?").bind(cursor, attempts, version.id).run();
+  if (attempts > CRASH_SKIP || version.error_attempts >= MAX_ERROR_ATTEMPTS) {
+    const [path, language, size] = plan[cursor];
+    const reason = attempts > CRASH_SKIP ? "processing_limit" : version.error_code === "download_failed" ? "download_failed" : "processing_error";
+    return { outcome: await commitWindow(deps, version, repo, plan, cursor + 1, [{ status: "skipped", path, reason, language, size }], []) };
+  }
+  // After a possible crash or any handled error, go one file at a time to isolate the cause.
+  return { maxFiles: attempts > CRASH_RETRY_SINGLE || version.error_attempts > 0 ? 1 : STEP_MAX_FILES };
+}
+
+/** A file in a step's window: its bytes, a reason it was not obtained, or a download error. */
+export type WindowItem =
+  | { ordinal: number; entry: PlanEntry; bytes: Uint8Array }
+  | { ordinal: number; entry: PlanEntry; skip: string }
+  | { ordinal: number; entry: PlanEntry; error: unknown };
+
+/** Decodes, redacts and chunks a window of files in order, then commits it in one batch. */
+export async function indexWindow(deps: IngestDeps, version: VersionRow, repo: RepoRow, plan: PlanEntry[], items: WindowItem[]): Promise<StepOutcome> {
   const budget = { remaining: deps.config.maxChunksPerRepo - version.chunks_total };
   const records: FileOutcome[] = [];
   const chunks: ChunkRecord[] = [];
-  let end = cursor;
-  for (let i = 0; i < window.length; i++) {
-    const { ordinal, entry } = window[i];
+  let end = version.files_cursor;
+  for (const item of items) {
+    const { ordinal, entry } = item;
     const [path, language, size] = entry;
-    const download = downloads[i];
     let outcome: FileOutcome;
     let fileChunks: ChunkRecord[] = [];
-    if (download.status === "rejected") {
-      const tooLarge = download.reason instanceof GitHubError && download.reason.code === "too_large";
-      if (!tooLarge) throw new DownloadFailure(path, download.reason);
-      outcome = { status: "skipped", path, reason: "too_large", language, size };
-    } else if (download.value === null) {
-      outcome = { status: "skipped", path, reason: "not_found", language, size };
+    if ("error" in item) {
+      throw new DownloadFailure(path, item.error);
+    } else if ("skip" in item) {
+      outcome = { status: "skipped", path, reason: item.skip, language, size };
     } else {
-      const result = processFile({ path, ordinal, language }, download.value, version.id, budget);
+      const result = processFile({ path, ordinal, language }, item.bytes, version.id, budget);
       if (result.file.status === "indexed" && chunks.length > 0 && chunks.length + result.chunks.length > STEP_MAX_CHUNKS) {
         budget.remaining += result.chunks.length;
         break; // leave this file for the next step
@@ -393,7 +449,7 @@ async function finalizeVersion(deps: IngestDeps, version: VersionRow, repo: Repo
   const note = deps.embedder && deps.vectors ? null : "Semantic search is not configured; keyword search is available.";
   await db.batch([
     db
-      .prepare("UPDATE versions SET status = 'ready', finished_at = ?, updated_at = ?, embedding_note = ?, step_attempts = 0 WHERE id = ? AND status = 'indexing'")
+      .prepare("UPDATE versions SET status = 'ready', finished_at = ?, updated_at = ?, embedding_note = ?, step_attempts = 0, next_attempt_at = 0 WHERE id = ? AND status = 'indexing'")
       .bind(now, now, note, version.id),
     db
       .prepare(
@@ -495,8 +551,12 @@ async function pauseEmbedding(deps: IngestDeps, version: VersionRow, waitMs: num
   return { kind: "waiting", untilMs: until, reason: note };
 }
 
-/** Deletes a retired version's vectors and rows, a bounded batch at a time. */
-async function cleanupStep(deps: IngestDeps, version: VersionRow): Promise<StepOutcome> {
+/**
+ * Deletes a retired version's vectors and rows, a bounded batch at a time.
+ * `keepVersion`: a failed upload keeps its version row (and error message)
+ * but loses its partial chunks, vectors and file list.
+ */
+async function cleanupStep(deps: IngestDeps, version: VersionRow, keepVersion = false): Promise<StepOutcome> {
   const { db } = deps;
   const { results } = await db
     .prepare("SELECT rowid, id FROM chunks WHERE version_id = ? ORDER BY rowid LIMIT ?")
@@ -534,9 +594,41 @@ async function cleanupStep(deps: IngestDeps, version: VersionRow): Promise<StepO
   await db.batch([
     db.prepare("DELETE FROM files WHERE version_id = ?").bind(version.id),
     db.prepare("DELETE FROM version_plans WHERE version_id = ?").bind(version.id),
-    db.prepare("DELETE FROM versions WHERE id = ?").bind(version.id),
+    keepVersion
+      ? db
+          .prepare("UPDATE versions SET chunks_total = 0, chunks_embeddable = 0, chunks_embedded = 0, next_attempt_at = 0, error_attempts = 0, updated_at = ? WHERE id = ?")
+          .bind(deps.now(), version.id)
+      : db.prepare("DELETE FROM versions WHERE id = ?").bind(version.id),
   ]);
   return { kind: "cleaned", rows: 0 };
+}
+
+/** An upload that made no progress within UPLOAD_LIMITS.idleTimeoutMs is stopped; its partial data is then removed. */
+async function expireUpload(deps: IngestDeps, version: VersionRow): Promise<StepOutcome> {
+  const now = deps.now();
+  await deps.db
+    .prepare(
+      `UPDATE versions SET status = 'failed', error_code = 'upload_expired', error_message = ?, next_attempt_at = 0, finished_at = ?, updated_at = ?
+       WHERE id = ? AND status = 'indexing'`,
+    )
+    .bind(`The upload was not finished within ${UPLOAD_LIMITS.idleTimeoutMs / 3_600_000} hours, so it was stopped and its partial data removed. Upload the ZIP again.`, now, now, version.id)
+    .run();
+  return { kind: "idle" };
+}
+
+/** Stops an upload at the owner's request; the previous index, if any, stays active. */
+export async function failUpload(deps: IngestDeps, version: VersionRow, code: string, message: string): Promise<void> {
+  const now = deps.now();
+  await deps.db
+    .prepare("UPDATE versions SET status = 'failed', error_code = ?, error_message = ?, next_attempt_at = 0, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'indexing'")
+    .bind(code, message, now, now, version.id)
+    .run();
+  // Remove what fits in this request; the cron trigger finishes the rest.
+  for (let i = 0; i < 3; i++) {
+    const current = await getVersion(deps.db, version.id);
+    if (!current || current.status !== "failed" || current.chunks_total === 0) break;
+    if ((await cleanupStep(deps, current, true)).kind === "waiting") break;
+  }
 }
 
 /** Backs off a superseded version whose vectors could not be deleted, so others get their turn. */
@@ -609,7 +701,7 @@ export async function nextBackgroundVersion(db: Database, now: number): Promise<
     .prepare(
       `SELECT id FROM versions
        WHERE next_attempt_at <= ?
-         AND (status IN ('indexing', 'superseded') OR (status = 'ready' AND chunks_embedded < chunks_embeddable))
+         AND (status IN ('indexing', 'superseded') OR (status = 'ready' AND chunks_embedded < chunks_embeddable) OR (status = 'failed' AND chunks_total > 0))
        ORDER BY CASE status WHEN 'indexing' THEN 0 WHEN 'ready' THEN 1 ELSE 2 END, updated_at
        LIMIT 1`,
     )

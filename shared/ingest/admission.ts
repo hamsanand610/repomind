@@ -1,3 +1,4 @@
+import type { ArchiveSummary } from "../zip/manifest.ts";
 import { INGEST_LIMITS } from "./limits.ts";
 import { planRepository } from "./pipeline.ts";
 
@@ -63,6 +64,8 @@ export interface AdmissionReport {
   /** First exclusions (bounded), for display. */
   excluded: Exclusion[];
   excludedCount: number;
+  /** Uploaded archives: what the browser found in the ZIP before admission. */
+  archive?: ArchiveSummary;
 }
 
 const MAX_LISTED_EXCLUSIONS = 200;

@@ -47,7 +47,7 @@ export async function citationValid(repo: PinnedRepo, citation: Citation): Promi
   if (citation.startLine < 1 || citation.endLine < citation.startLine || citation.endLine > lines.length) return `range ${citation.startLine}-${citation.endLine} outside 1-${lines.length}`;
   const expected = lines.slice(citation.startLine - 1, citation.endLine).join("\n");
   if (!expected.startsWith(citation.snippet)) return "snippet differs from the file";
-  if (!citation.url.includes(`/blob/${repo.sha}/`) || !citation.url.includes(`#L${citation.startLine}`)) return "link not pinned to the commit/lines";
+  if (!citation.url?.includes(`/blob/${repo.sha}/`) || !citation.url.includes(`#L${citation.startLine}`)) return "link not pinned to the commit/lines";
   return "valid";
 }
 

@@ -265,7 +265,7 @@ function FileViewer({ repo, path, lines }: { repo: RepoSummary; path: string; li
           ← All files
         </button>
         <code className="viewer__path">{path}</code>
-        {data && (
+        {data?.githubUrl && (
           <a className="viewer__github" href={`${data.githubUrl}${anchor}`} target="_blank" rel="noopener noreferrer">
             GitHub ↗
           </a>

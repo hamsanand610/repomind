@@ -10,12 +10,12 @@ function version(overrides: Partial<VersionSummary> = {}): VersionSummary {
   return {
     id: "v", commitSha: "a".repeat(40), ref: "main", status: "ready", filesTotal: 10, filesProcessed: 10,
     chunksTotal: 50, chunksEmbeddable: 50, chunksEmbedded: 50, embeddingNote: null, errorCode: null, errorMessage: null,
-    nextAttemptAt: 0, createdAt: 0, finishedAt: 1, admission: null, indexSkips: {}, coverage: "full", ...overrides,
+    nextAttemptAt: 0, uploadExpiresAt: null, createdAt: 0, finishedAt: 1, admission: null, indexSkips: {}, coverage: "full", ...overrides,
   };
 }
 
 function repo(active: VersionSummary | null, latest: VersionSummary | null = active): RepoSummary {
-  return { id: "r", owner: "o", name: "n", ref: null, githubUrl: "https://github.com/o/n", createdAt: 0, updatedAt: 0, active, latest };
+  return { id: "r", source: "github", owner: "o", name: "n", ref: null, githubUrl: "https://github.com/o/n", createdAt: 0, updatedAt: 0, active, latest };
 }
 
 describe("repoState", () => {

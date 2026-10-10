@@ -92,6 +92,16 @@ describe("API routes always reach the Worker", () => {
     expect(response.status).toBe(200);
     expect(JSON.parse(response.body).canonicalUrl).toBe("https://github.com/owner/repo");
   });
+
+  it("routes the ZIP upload endpoints to the Worker, which requires a session", async () => {
+    for (const [method, path] of [["POST", "/api/uploads"], ["GET", "/api/repos/r_x/upload"], ["POST", "/api/repos/r_x/upload/files"], ["POST", "/api/repos/r_x/upload/cancel"]]) {
+      // Empty bodies: the local preview proxy (not the Worker) fails the request that follows
+      // a POST whose body the Worker rejected without reading.
+      const response = await send(path, { method, headers: method === "POST" ? { "Content-Type": "application/json", "Content-Length": "0" } : {} });
+      expect(response.status).toBe(401);
+      expect(response.headers["content-type"]).toContain("application/json");
+    }
+  });
 });
 
 describe("the SPA still owns non-API navigation", () => {

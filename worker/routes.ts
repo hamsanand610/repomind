@@ -7,6 +7,7 @@ import type {
   RepoSummary,
   SearchResponse,
   SessionResponse,
+  UploadBatchResponse,
   ValidateRepoUrlResponse,
   VersionSummary,
 } from "../shared/api.ts";
@@ -39,6 +40,9 @@ import type { RequestContext, Route } from "./router.ts";
 import { commitUrl } from "./ask.ts";
 import { architecture, fileCodeInfo, findImporters, findSymbol } from "./code-intel.ts";
 import { listFiles, readFile, searchChunks, searchPaths } from "./search.ts";
+import { ARCHIVE_COVERAGE_GAPS, validateUploadManifest } from "../shared/zip/manifest.ts";
+import { UPLOAD_BATCH_BODY_BYTES } from "../shared/zip/limits.ts";
+import { cancelUpload, createUploadRepository, indexUploadBatch, readUploadBatch, startUploadVersion, uploadStatus } from "./uploads.ts";
 
 const SMALL_BODY = 4 * 1024;
 /** A discovery listing of up to 2,000 [path, size] pairs. */
@@ -65,6 +69,12 @@ export const apiRoutes: readonly Route[] = [
   { method: "GET", pattern: "/api/repos/:id/importers", handler: authed(importers) },
   { method: "GET", pattern: "/api/repos/:id/architecture", handler: authed(getArchitecture) },
   { method: "POST", pattern: "/api/repos/:id/ask", handler: authed(ask) },
+
+  { method: "POST", pattern: "/api/uploads", handler: authed(createUpload) },
+  { method: "GET", pattern: "/api/repos/:id/upload", handler: authed(getUpload) },
+  { method: "POST", pattern: "/api/repos/:id/upload", handler: authed(newUploadVersion) },
+  { method: "POST", pattern: "/api/repos/:id/upload/files", handler: authed(uploadFiles) },
+  { method: "POST", pattern: "/api/repos/:id/upload/cancel", handler: authed(cancelUploadRoute) },
 ];
 
 type AuthedHandler = (context: RequestContext, ownerId: string) => Promise<Response>;
@@ -138,10 +148,14 @@ async function hashKey(text: string): Promise<string> {
 /** Index-time skips that leave supported files unsearchable (content-type skips such as binaries do not). */
 const COVERAGE_GAPS = new Set(["over_repository_budget", "processing_limit", "download_failed", "processing_error", "too_large", "exceeds_repository_share"]);
 
-export function toVersionSummary(row: VersionRow | null, indexSkips: Record<string, number> = {}): VersionSummary | null {
+export function toVersionSummary(row: VersionRow | null, indexSkips: Record<string, number> = {}, source: RepoRow["source"] = "github"): VersionSummary | null {
   if (!row) return null;
   const admission = parseAdmission(row);
-  const gaps = Object.keys(indexSkips).some((reason) => COVERAGE_GAPS.has(reason));
+  const gaps =
+    Object.keys(indexSkips).some((reason) => COVERAGE_GAPS.has(reason)) ||
+    Object.entries(admission?.archive?.skipped ?? {}).some(([reason, n]) => n > 0 && ARCHIVE_COVERAGE_GAPS.has(reason));
+  // An upload in progress waits for the browser, not for a retry: next_attempt_at is its expiry.
+  const uploading = source === "zip" && row.status === "indexing";
   return {
     id: row.id,
     commitSha: row.commit_sha,
@@ -155,7 +169,8 @@ export function toVersionSummary(row: VersionRow | null, indexSkips: Record<stri
     embeddingNote: row.embedding_note,
     errorCode: row.error_code,
     errorMessage: row.error_message,
-    nextAttemptAt: row.next_attempt_at,
+    nextAttemptAt: uploading ? 0 : row.next_attempt_at,
+    uploadExpiresAt: uploading ? row.next_attempt_at : null,
     createdAt: row.created_at,
     finishedAt: row.finished_at,
     admission,
@@ -176,16 +191,18 @@ async function repoSummary(context: RequestContext, repo: RepoRow): Promise<Repo
       .all<{ reason: string | null; n: number }>();
     for (const row of results) skips[row.reason ?? "unknown"] = row.n;
   }
+  const source = repo.source ?? "github";
   return {
     id: repo.id,
+    source,
     owner: repo.gh_owner,
     name: repo.gh_repo,
     ref: repo.requested_ref || null,
-    githubUrl: `https://github.com/${repo.gh_owner}/${repo.gh_repo}`,
+    githubUrl: source === "zip" ? null : `https://github.com/${repo.gh_owner}/${repo.gh_repo}`,
     createdAt: repo.created_at,
     updatedAt: repo.updated_at,
-    active: toVersionSummary(active, skips),
-    latest: latest === active ? toVersionSummary(active, skips) : toVersionSummary(latest),
+    active: toVersionSummary(active, skips, source),
+    latest: latest === active ? toVersionSummary(active, skips, source) : toVersionSummary(latest, {}, source),
   };
 }
 
@@ -237,6 +254,7 @@ async function removeRepo(context: RequestContext, ownerId: string): Promise<Res
 async function reindexRepo(context: RequestContext, ownerId: string): Promise<Response> {
   const { db, now } = context.services;
   const repo = await getRepoForOwner(db, ownerId, context.params.id);
+  if (repo.source === "zip") throw new HttpError(400, "invalid_request", "This repository was uploaded as a ZIP. Upload a new version of the ZIP instead.");
   const body = await readJsonBody(context.request, DISCOVERY_BODY);
   const discovery = isRecord(body) ? readDiscovery(body, { owner: repo.gh_owner, repo: repo.gh_repo }) : null;
   await enforceLimit(db, `start:${ownerId}`, dayBucket(now()), 20, "You have started 20 indexing jobs today. Try again tomorrow.");
@@ -331,6 +349,50 @@ async function search(context: RequestContext, ownerId: string): Promise<Respons
     200,
     context.requestId,
   );
+}
+
+// --- ZIP uploads (ADR 0003) ---------------------------------------------------------
+
+async function readManifest(request: Request) {
+  const result = validateUploadManifest(await readJsonBody(request, DISCOVERY_BODY));
+  if (!result.ok) throw new HttpError(400, "invalid_request", result.message);
+  return result.manifest;
+}
+
+async function createUpload(context: RequestContext, ownerId: string): Promise<Response> {
+  const manifest = await readManifest(context.request);
+  const { db, now } = context.services;
+  await enforceLimit(db, `start:${ownerId}`, dayBucket(now()), 20, "You have started 20 indexing jobs today. Try again tomorrow.");
+  const repoId = await createUploadRepository(context.services, ownerId, manifest);
+  return jsonResponse(await repoSummary(context, await getRepoForOwner(db, ownerId, repoId)), 201, context.requestId);
+}
+
+async function newUploadVersion(context: RequestContext, ownerId: string): Promise<Response> {
+  const { db, now } = context.services;
+  const repo = await getRepoForOwner(db, ownerId, context.params.id);
+  const manifest = await readManifest(context.request);
+  await enforceLimit(db, `start:${ownerId}`, dayBucket(now()), 20, "You have started 20 indexing jobs today. Try again tomorrow.");
+  await startUploadVersion(context.services, repo, manifest);
+  return jsonResponse(await repoSummary(context, await getRepoForOwner(db, ownerId, repo.id)), 202, context.requestId);
+}
+
+async function getUpload(context: RequestContext, ownerId: string): Promise<Response> {
+  return jsonResponse(await uploadStatus(context.services, ownerId, context.params.id), 200, context.requestId);
+}
+
+async function uploadFiles(context: RequestContext, ownerId: string): Promise<Response> {
+  const { db, now } = context.services;
+  await enforceLimit(db, `upload:${ownerId}`, minuteBucket(now()), 300, "Too many upload requests. Slow down for a minute.");
+  const batch = readUploadBatch(await readJsonBody(context.request, UPLOAD_BATCH_BODY_BYTES));
+  const cursor = await indexUploadBatch(context.services, ownerId, context.params.id, batch);
+  const repo = await getRepoForOwner(db, ownerId, context.params.id);
+  return jsonResponse({ cursor, repo: await repoSummary(context, repo) } satisfies UploadBatchResponse, 200, context.requestId);
+}
+
+async function cancelUploadRoute(context: RequestContext, ownerId: string): Promise<Response> {
+  const body = await readJsonBody(context.request, SMALL_BODY);
+  await cancelUpload(context.services, ownerId, context.params.id, isRecord(body) ? body.versionId : undefined);
+  return jsonResponse(await repoSummary(context, await getRepoForOwner(context.services.db, ownerId, context.params.id)), 200, context.requestId);
 }
 
 async function ask(context: RequestContext, ownerId: string): Promise<Response> {

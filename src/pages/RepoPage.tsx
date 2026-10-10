@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RepoSummary } from '../../shared/api.ts'
 import { ErrorNotice, Spinner, StatusBadge } from '../components/ui.tsx'
+import { UploadPanel } from '../components/upload.tsx'
 import { ApiError, api, errorMessage } from '../lib/api.ts'
 import { isPartial, isPaused, needsWork, repoState, shortSha } from '../lib/format.ts'
 import { linkHandler } from '../lib/router.ts'
@@ -115,17 +116,28 @@ export function RepoPage({ id, tab }: { id: string; tab: Tab }) {
         </a>
         <div className="repo-header__title">
           <h1>
-            {repo.owner}/<strong>{repo.name}</strong>
+            {repo.source === 'zip' ? (
+              <strong>{repo.name}</strong>
+            ) : (
+              <>
+                {repo.owner}/<strong>{repo.name}</strong>
+              </>
+            )}
           </h1>
           <StatusBadge state={repoState(repo)} partial={isPartial(repo)} />
         </div>
-        {version && (
+        {version && repo.githubUrl && (
           <p className="repo-header__meta">
             {version.ref} @{' '}
             <a href={`${repo.githubUrl}/commit/${version.commitSha}`} target="_blank" rel="noopener noreferrer">
               <code>{shortSha(version.commitSha)}</code>
             </a>{' '}
             · <a href={repo.githubUrl} target="_blank" rel="noopener noreferrer">View on GitHub ↗</a>
+          </p>
+        )}
+        {version && repo.source === 'zip' && (
+          <p className="repo-header__meta">
+            Uploaded ZIP <code>{version.ref}</code> · content fingerprint <code>{shortSha(version.commitSha)}</code>
           </p>
         )}
         <nav className="tabs" aria-label="Repository sections">
@@ -140,6 +152,7 @@ export function RepoPage({ id, tab }: { id: string; tab: Tab }) {
         </nav>
       </header>
       {error && <ErrorNotice error={error} onRetry={reload} />}
+      {repo.source === 'zip' && <UploadPanel repo={repo} onChange={setRepo} />}
       {tab === 'overview' && <OverviewTab repo={repo} onChange={setRepo} />}
       {tab === 'files' && <FilesTab repo={repo} />}
       {tab === 'search' && <SearchTab repo={repo} />}

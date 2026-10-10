@@ -1,9 +1,11 @@
 import { useState } from 'react'
-import type { RepoSummary, VersionSummary } from '../../../shared/api.ts'
+import type { AdmissionReport, RepoSummary, VersionSummary } from '../../../shared/api.ts'
 import { ConfirmDialog, Notice, Progress, Spinner } from '../../components/ui.tsx'
+import { ZipPicker } from '../../components/upload.tsx'
 import { api, errorMessage } from '../../lib/api.ts'
 import { discoverRepository } from '../../lib/discovery.ts'
-import { SKIP_REASON_LABEL, filesIndexed, relativeTime, repoState, shortSha } from '../../lib/format.ts'
+import { SKIP_REASON_LABEL, filesIndexed, formatBytes, relativeTime, repoState, repoTitle, shortSha } from '../../lib/format.ts'
+import { keepArchive, usePrepareArchive } from '../../lib/upload.ts'
 import { navigate } from '../../lib/router.ts'
 import { ArchitecturePanel } from './ArchitecturePanel.tsx'
 
@@ -19,14 +21,19 @@ export function OverviewTab({ repo, onChange }: { repo: RepoSummary; onChange: (
         <h2 id="status-title" className="card__title">
           Index status
         </h2>
-        {indexing && latest && <IndexingProgress version={latest} />}
+        {indexing && latest && repo.source !== 'zip' && <IndexingProgress version={latest} />}
+        {indexing && repo.source === 'zip' && <p className="muted">A ZIP upload is in progress; see above.</p>}
         {latest?.status === 'failed' && (
-          <Notice tone="danger" title="The latest indexing attempt failed">
+          <Notice tone="danger" title={repo.source === 'zip' ? 'The latest upload did not finish' : 'The latest indexing attempt failed'}>
             <p>{latest.errorMessage ?? 'Indexing could not be completed.'}</p>
-            {active && <p>Searches and answers keep using the previous index (commit <code>{shortSha(active.commitSha)}</code>).</p>}
+            {active && (
+              <p>
+                Searches and answers keep using the previous index ({repo.source === 'zip' ? 'fingerprint' : 'commit'} <code>{shortSha(active.commitSha)}</code>).
+              </p>
+            )}
           </Notice>
         )}
-        {active ? <ActiveIndex version={active} /> : !indexing && latest?.status !== 'failed' && <p className="muted">No completed index yet.</p>}
+        {active ? <ActiveIndex version={active} uploaded={repo.source === 'zip'} /> : !indexing && latest?.status !== 'failed' && <p className="muted">No completed index yet.</p>}
         {state === 'ready' && <Notice tone="success">Ready. Explore the files, search, or ask a question.</Notice>}
       </section>
 
@@ -56,7 +63,7 @@ function IndexingProgress({ version }: { version: VersionSummary }) {
   )
 }
 
-function ActiveIndex({ version }: { version: VersionSummary }) {
+function ActiveIndex({ version, uploaded }: { version: VersionSummary; uploaded: boolean }) {
   const semanticDone = version.chunksEmbedded >= version.chunksEmbeddable
   const indexed = filesIndexed(version)
   const skips = Object.entries(version.indexSkips ?? {}).sort((a, b) => b[1] - a[1])
@@ -64,9 +71,17 @@ function ActiveIndex({ version }: { version: VersionSummary }) {
     <div className="stack">
       <dl className="facts">
         <div>
-          <dt>Indexed commit</dt>
+          <dt>{uploaded ? 'Indexed archive' : 'Indexed commit'}</dt>
           <dd>
-            <code>{shortSha(version.commitSha)}</code> on {version.ref}
+            {uploaded ? (
+              <>
+                <code>{version.ref}</code> <span className="muted">(fingerprint {shortSha(version.commitSha)})</span>
+              </>
+            ) : (
+              <>
+                <code>{shortSha(version.commitSha)}</code> on {version.ref}
+              </>
+            )}
           </dd>
         </div>
         <div>
@@ -160,8 +175,41 @@ function AdmissionCard({ version }: { version: VersionSummary }) {
           )}
         </details>
       )}
+      {report.archive && <ArchiveFacts archive={report.archive} />}
       <p className="hint">Folders such as dependencies and build output, lockfiles, binaries and files that may hold credentials are never indexed.</p>
     </section>
+  )
+}
+
+function ArchiveFacts({ archive }: { archive: NonNullable<AdmissionReport['archive']> }) {
+  const skipped = Object.entries(archive.skipped).sort((a, b) => b[1] - a[1])
+  const total = skipped.reduce((sum, [, n]) => sum + n, 0)
+  return (
+    <div className="stack">
+      <p className="muted">
+        From <code>{archive.fileName}</code> ({formatBytes(archive.bytes)}, {archive.entries.toLocaleString()} entries).
+        {archive.rootFolder && (
+          <>
+            {' '}Every file was inside the folder <code>{archive.rootFolder}/</code>, so paths are shown relative to it.
+          </>
+        )}
+      </p>
+      {total > 0 && (
+        <details className="details">
+          <summary>
+            {total.toLocaleString()} entr{total === 1 ? 'y' : 'ies'} left out while your browser read the archive
+          </summary>
+          <ul className="reason-list">
+            {skipped.map(([reason, count]) => (
+              <li key={reason}>
+                <span>{SKIP_REASON_LABEL[reason] ?? reason}</span>
+                <span className="muted">{count.toLocaleString()}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
   )
 }
 
@@ -170,6 +218,7 @@ function Actions({ repo, onChange }: { repo: RepoSummary; onChange: (repo: RepoS
   const [error, setError] = useState<string | null>(null)
   const [confirming, setConfirming] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const { prepare, progress: reading, error: readError } = usePrepareArchive()
   const indexing = repo.latest?.status === 'indexing'
 
   async function reindex() {
@@ -198,32 +247,64 @@ function Actions({ repo, onChange }: { repo: RepoSummary; onChange: (repo: RepoS
     }
   }
 
-  const name = `${repo.owner}/${repo.name}`
+  async function uploadNewVersion(file: File) {
+    const archive = await prepare(file)
+    if (!archive) return
+    setError(null)
+    try {
+      const updated = await api.newUploadVersion(repo.id, archive.manifest)
+      keepArchive(repo.id, archive)
+      onChange(updated)
+    } catch (err) {
+      setError(errorMessage(err))
+    }
+  }
+
+  const uploaded = repo.source === 'zip'
+  const name = repoTitle(repo)
   return (
     <section className="card stack" aria-labelledby="actions-title">
       <h2 id="actions-title" className="card__title">
         Manage
       </h2>
       <div className="actions">
-        <div>
-          <button type="button" className="button button--secondary" onClick={reindex} disabled={indexing || progress !== null}>
-            Re-index latest commit
-          </button>
-          <p className="hint">Pins the newest commit and builds a fresh index. The current one stays usable until the new one is ready.</p>
-        </div>
+        {uploaded ? (
+          <div>
+            <ZipPicker label="Upload a new version" onFile={uploadNewVersion} disabled={indexing || reading !== null} describedBy="new-version-help" />
+            <p id="new-version-help" className="hint">
+              Indexes a newer ZIP of this project. The current index stays usable until the new one is ready.
+            </p>
+          </div>
+        ) : (
+          <div>
+            <button type="button" className="button button--secondary" onClick={reindex} disabled={indexing || progress !== null}>
+              Re-index latest commit
+            </button>
+            <p className="hint">Pins the newest commit and builds a fresh index. The current one stays usable until the new one is ready.</p>
+          </div>
+        )}
         <div>
           <button type="button" className="button button--danger-outline" onClick={() => setConfirming(true)} disabled={deleting}>
             Delete index
           </button>
-          <p className="hint">Removes RepoMind's stored copy, search index and vectors. Your GitHub repository is not touched.</p>
+          <p className="hint">
+            {uploaded
+              ? "Removes RepoMind's stored files, search index and vectors for this upload. Your ZIP file is not touched."
+              : "Removes RepoMind's stored copy, search index and vectors. Your GitHub repository is not touched."}
+          </p>
         </div>
       </div>
-      {progress && <Spinner label={progress} />}
-      {error && <Notice tone="danger">{error}</Notice>}
+      {(progress ?? reading) && <Spinner label={(progress ?? reading) as string} />}
+      {(error ?? readError) && <Notice tone="danger">{error ?? readError}</Notice>}
       {confirming && (
         <ConfirmDialog
           title="Delete this index?"
-          description={<p>This permanently removes RepoMind's stored files, chunks and vectors for {name}. It does not change anything on GitHub.</p>}
+          description={
+            <p>
+              This permanently removes RepoMind's stored files, chunks and vectors for {name}.{' '}
+              {uploaded ? 'It does not change your ZIP file.' : 'It does not change anything on GitHub.'}
+            </p>
+          }
           confirmText={name}
           actionLabel="Delete index"
           busy={deleting}

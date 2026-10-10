@@ -222,7 +222,7 @@ describe("repository and version isolation", () => {
 
     for (const question of ["What does this project do?", "orbit controls landing page ALPHA_ONLY_CANARY", "What programming languages and technologies does it use?"]) {
       const answer = await ask(cookie, target.id, question);
-      for (const citation of answer.citations) expect(citation.url.startsWith(`https://github.com/jane/portfolio/blob/${PORTFOLIO.sha}/`)).toBe(true);
+      for (const citation of answer.citations) expect(citation.url?.startsWith(`https://github.com/jane/portfolio/blob/${PORTFOLIO.sha}/`)).toBe(true);
       expect(answer.commitSha).toBe(PORTFOLIO.sha);
     }
     for (const prompt of ai.prompts) {

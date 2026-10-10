@@ -175,9 +175,11 @@ function CitationItem({ repo, citation, focused }: { repo: RepoSummary; citation
         <a href={href} onClick={(event) => { event.preventDefault(); navigate(href) }} className="citation__path">
           <code>{citation.path}</code> <span className="muted">lines {citation.startLine}–{citation.endLine}</span>
         </a>
-        <a href={citation.url} target="_blank" rel="noopener noreferrer" className="citation__github">
-          GitHub ↗
-        </a>
+        {citation.url && (
+          <a href={citation.url} target="_blank" rel="noopener noreferrer" className="citation__github">
+            GitHub ↗
+          </a>
+        )}
       </div>
       <details open={focused}>
         <summary>Show snippet</summary>

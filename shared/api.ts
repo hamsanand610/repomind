@@ -25,6 +25,8 @@ export type ApiErrorCode =
   | "conflict"
   | "repo_limit"
   | "github_error"
+  | "content_mismatch"
+  | "unavailable"
   | "internal_error";
 
 /**
@@ -81,6 +83,8 @@ export interface VersionSummary {
   errorMessage: string | null;
   /** Epoch ms; work is paused (rate limit, quota) until then. 0 if not paused. */
   nextAttemptAt: number;
+  /** Uploads in progress: files arrive from the browser; unfinished uploads stop at this time (epoch ms). */
+  uploadExpiresAt: number | null;
   createdAt: number;
   finishedAt: number | null;
   admission: AdmissionReport | null;
@@ -92,11 +96,15 @@ export interface VersionSummary {
 
 export interface RepoSummary {
   id: string;
+  /** "zip": an uploaded archive. Its versions' ref is the archive's file name and commitSha its content fingerprint. */
+  source: "github" | "zip";
+  /** GitHub owner; empty for uploads. */
   owner: string;
   name: string;
   /** Requested branch or tag; null for the default branch. */
   ref: string | null;
-  githubUrl: string;
+  /** Null for uploads. */
+  githubUrl: string | null;
   createdAt: number;
   updatedAt: number;
   active: VersionSummary | null;
@@ -128,7 +136,8 @@ export interface FileContentResponse {
   commitSha: string;
   file: FileEntry;
   content: string;
-  githubUrl: string;
+  /** Null for uploads. */
+  githubUrl: string | null;
   /** Definitions in this file; null when the language is not supported. */
   outline: SymbolDefinition[] | null;
   /** Imports in this file and how each resolves; null when imports are not analysed for the language. */
@@ -240,12 +249,39 @@ export interface Citation {
   startLine: number;
   endLine: number;
   snippet: string;
-  /** GitHub permalink pinned to the indexed commit. */
-  url: string;
+  /** GitHub permalink pinned to the indexed commit; null for uploads. */
+  url: string | null;
 }
 
 export interface AskRequest {
   question: string;
+}
+
+/** The upload in progress: what the browser still has to send, in order. */
+export interface UploadStatusResponse {
+  versionId: string;
+  /** Content fingerprint of the archive being uploaded; resuming requires the same one. */
+  fingerprint: string;
+  archiveName: string;
+  /** Files already processed (the next file's index). */
+  cursor: number;
+  /** Admitted files as [path, size], in upload order. */
+  files: Array<[string, number]>;
+  expiresAt: number;
+}
+
+export interface UploadBatchRequest {
+  versionId: string;
+  /** Index of the first file in this batch; must equal the server's cursor. */
+  start: number;
+  /** Raw file bytes, base64-encoded, in plan order. */
+  files: Array<{ path: string; data: string }>;
+}
+
+export interface UploadBatchResponse {
+  /** Where the next batch starts (the server may process fewer files than sent). */
+  cursor: number;
+  repo: RepoSummary;
 }
 
 export interface AskResponse {
