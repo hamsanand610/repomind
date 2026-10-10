@@ -5,6 +5,7 @@ import { api, errorMessage } from '../../lib/api.ts'
 import { discoverRepository } from '../../lib/discovery.ts'
 import { SKIP_REASON_LABEL, filesIndexed, relativeTime, repoState, shortSha } from '../../lib/format.ts'
 import { navigate } from '../../lib/router.ts'
+import { ArchitecturePanel } from './ArchitecturePanel.tsx'
 
 export function OverviewTab({ repo, onChange }: { repo: RepoSummary; onChange: (repo: RepoSummary) => void }) {
   const state = repoState(repo)
@@ -29,6 +30,7 @@ export function OverviewTab({ repo, onChange }: { repo: RepoSummary; onChange: (
         {state === 'ready' && <Notice tone="success">Ready. Explore the files, search, or ask a question.</Notice>}
       </section>
 
+      {active?.status === 'ready' && <ArchitecturePanel repo={repo} />}
       {(latest?.admission ?? active?.admission) && <AdmissionCard version={(indexing ? latest : (active ?? latest)) as VersionSummary} />}
       <Actions repo={repo} onChange={onChange} />
     </div>

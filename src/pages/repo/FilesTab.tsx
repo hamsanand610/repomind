@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { FileContentResponse, FileEntry, RepoSummary } from '../../../shared/api.ts'
+import type { FileContentResponse, FileEntry, ImportersResponse, RepoSummary } from '../../../shared/api.ts'
 import { CodeView } from '../../components/CodeView.tsx'
+import { ImportTarget, KindTag, SourceLink } from '../../components/code.tsx'
 import { EmptyState, ErrorNotice, Notice, Spinner } from '../../components/ui.tsx'
 import { api, errorMessage } from '../../lib/api.ts'
 import { SKIP_REASON_LABEL, formatBytes } from '../../lib/format.ts'
@@ -165,6 +166,80 @@ function FileItem({ file, label, selected, repoId, depth = 0 }: { file: FileEntr
   )
 }
 
+/** Outline, imports and importers of the open file; each entry links to exact lines. */
+export function CodeMap({ repoId, path, data }: { repoId: string; path: string; data: FileContentResponse }) {
+  const [importers, setImporters] = useState<ImportersResponse | null>(null)
+  const [importersError, setImportersError] = useState<string | null>(null)
+  const [loadingImporters, setLoadingImporters] = useState(false)
+  const language = data.file.language
+  const loadImporters = () => {
+    if (importers || loadingImporters) return
+    setLoadingImporters(true)
+    api.importers(repoId, path).then(setImporters, (err) => setImportersError(errorMessage(err))).finally(() => setLoadingImporters(false))
+  }
+  const outline = data.outline
+  const imports = data.imports
+  return (
+    <div className="code-map">
+      <details className="details">
+        <summary>Outline{outline ? ` (${outline.length})` : ''}</summary>
+        {outline === null ? (
+          <p className="muted">Definitions are not detected in {language} files.</p>
+        ) : outline.length === 0 ? (
+          <p className="muted">No functions, classes or other definitions were found in this file.</p>
+        ) : (
+          <ul className="outline">
+            {outline.slice(0, 400).map((d) => (
+              <li key={`${d.line}:${d.name}`} className={d.container ? 'outline__nested' : undefined}>
+                <KindTag kind={d.kind} /> <SourceLink repoId={repoId} source={{ path, startLine: d.line, endLine: d.endLine }} label={d.container ? `${d.container}.${d.name}` : d.name} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </details>
+      <details className="details">
+        <summary>Imports{imports ? ` (${imports.length})` : ''}</summary>
+        {imports === null ? (
+          <p className="muted">Imports are not analysed for {language} files.</p>
+        ) : imports.length === 0 ? (
+          <p className="muted">This file has no import statements.</p>
+        ) : (
+          <ul className="import-list">
+            {imports.map((imp) => (
+              <li key={`${imp.line}:${imp.specifier}`}>
+                <SourceLink repoId={repoId} source={{ path, startLine: imp.line, endLine: imp.endLine }} label={imp.specifier} /> <ImportTarget repoId={repoId} imp={imp} />
+              </li>
+            ))}
+          </ul>
+        )}
+        {data.dynamicImports.length > 0 && (
+          <p className="hint">
+            {data.dynamicImports.length} import{data.dynamicImports.length === 1 ? ' is' : 's are'} computed at run time and cannot be followed (line
+            {data.dynamicImports.length === 1 ? '' : 's'} {data.dynamicImports.map((d) => d.line).join(', ')}).
+          </p>
+        )}
+      </details>
+      <details className="details" onToggle={(event) => event.currentTarget.open && loadImporters()}>
+        <summary>Imported by{importers ? ` (${importers.importers.length}${importers.truncated ? '+' : ''})` : ''}</summary>
+        {loadingImporters && <Spinner label="Finding files that import this one…" />}
+        {importersError && <ErrorNotice error={importersError} />}
+        {importers && !importers.supported && <p className="muted">Importers cannot be found for this file name.</p>}
+        {importers && importers.supported && importers.importers.length === 0 && <p className="muted">No indexed file imports this one.</p>}
+        {importers && importers.importers.length > 0 && (
+          <ul className="import-list">
+            {importers.importers.map((r) => (
+              <li key={`${r.path}:${r.startLine}`}>
+                <SourceLink repoId={repoId} source={r} /> <code className="muted">{r.specifier}</code>
+              </li>
+            ))}
+          </ul>
+        )}
+        {importers?.truncated && <p className="hint">More files mention this name than were examined; the list may be incomplete.</p>}
+      </details>
+    </div>
+  )
+}
+
 function FileViewer({ repo, path, lines }: { repo: RepoSummary; path: string; lines: [number, number] | null }) {
   const [data, setData] = useState<FileContentResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -212,6 +287,7 @@ function FileViewer({ repo, path, lines }: { repo: RepoSummary; path: string; li
               {data.file.secretsRedacted} credential-like value{data.file.secretsRedacted === 1 ? ' was' : 's were'} redacted before indexing. Line numbers are unchanged.
             </Notice>
           )}
+          <CodeMap key={path} repoId={repo.id} path={path} data={data} />
           <CodeView content={data.content} highlight={lines} />
         </>
       )}

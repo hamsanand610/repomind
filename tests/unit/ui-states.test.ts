@@ -7,11 +7,14 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { AdmissionReport, RepoSummary, VersionSummary } from "../../shared/api.ts";
+import type { AdmissionReport, ArchitectureResponse, RepoSummary, SymbolsResponse, VersionSummary } from "../../shared/api.ts";
 import { StatusBadge } from "../../src/components/ui.tsx";
 import { isPartial, repoState } from "../../src/lib/format.ts";
 import { RepoCard } from "../../src/pages/ReposPage.tsx";
+import { ArchitectureBody } from "../../src/pages/repo/ArchitecturePanel.tsx";
+import { CodeMap } from "../../src/pages/repo/FilesTab.tsx";
 import { OverviewTab } from "../../src/pages/repo/OverviewTab.tsx";
+import { SymbolResults } from "../../src/pages/repo/SearchTab.tsx";
 
 const later = Date.now() + 3 * 3_600_000;
 const admission = (decision: AdmissionReport["decision"], message: string): AdmissionReport => ({
@@ -67,6 +70,74 @@ describe("repository cards", () => {
 
   it("show why a repository failed", () => {
     expect(card(STATES.failed)).toContain("This repository needs about 21,969–28,199 chunks");
+  });
+});
+
+describe("code intelligence views", () => {
+  const html = (element: Parameters<typeof renderToStaticMarkup>[0]) => renderToStaticMarkup(element);
+
+  it("labels facts and inferences, links each statement to its lines, and states what is unknown", () => {
+    const data: ArchitectureResponse = {
+      commitSha: "a".repeat(40),
+      coverage: { partial: true, filesIndexed: 229, filesSelected: 229, candidateFiles: 463 },
+      summary: [
+        { text: "README.md describes it as: “A tiny HTTP client.”", basis: "explicit", refs: [{ path: "README.md", startLine: 3, endLine: 4 }] },
+        { text: "Likely entry point: index.html (HTML page at the root).", basis: "inferred", refs: [{ path: "index.html", startLine: 1, endLine: 1 }] },
+      ],
+      purpose: [{ source: "readme", title: "Client", text: "A tiny HTTP client.", ref: { path: "README.md", startLine: 3, endLine: 4 } }],
+      languages: [{ language: "javascript", files: 10, lines: 900 }],
+      dependencies: [
+        { name: "follow-redirects", version: "^1", scope: "runtime", ecosystem: "npm", declaredIn: { path: "package.json", startLine: 9, endLine: 9 }, label: null, usage: { files: 2, examples: [{ path: "lib/http.js", startLine: 4, endLine: 4 }] } },
+        { name: "lodash", version: "^4", scope: "runtime", ecosystem: "npm", declaredIn: { path: "package.json", startLine: 10, endLine: 10 }, label: "utility library", usage: { files: 0, examples: [] } },
+        { name: "serde", version: "1", scope: "runtime", ecosystem: "cargo", declaredIn: { path: "Cargo.toml", startLine: 5, endLine: 5 }, label: null, usage: null },
+      ],
+      remoteScripts: [],
+      entryPoints: [{ path: "index.html", reason: "HTML page at the root", basis: "inferred", ref: null, imports: [], dynamicImports: 2 }],
+      configFiles: [{ path: "tsconfig.json", category: "build" }],
+      directories: [{ path: "lib", files: 8, lines: 800, languages: ["javascript"], role: "library source code", basis: "inferred", ref: null }],
+      limitations: ["Relationships are import statements, not a call graph."],
+    };
+    const page = text(html(createElement(ArchitectureBody, { repoId: "r1", data })));
+    expect(page).toContain("Partial index: 229 of 463 supported files are analysed.");
+    expect(page).toContain("From the files");
+    expect(page).toContain("Inferred");
+    expect(page).toContain("no import found in the indexed code");
+    expect(page).toContain("not analysed for cargo");
+    expect(page).toContain("2 imports are computed at run time and not followed.");
+    expect(page).toContain("Relationships are import statements, not a call graph.");
+    expect(html(createElement(ArchitectureBody, { repoId: "r1", data }))).toContain('href="/repos/r1/files?path=README.md&amp;lines=3-4"');
+  });
+
+  it("shows definitions, then usages grouped by role, and explains a missing definition in a partial index", () => {
+    const found: SymbolsResponse = {
+      commitSha: "a".repeat(40), name: "formatPrice", truncated: false, unsupportedLanguages: ["elixir"],
+      definitions: [{ name: "formatPrice", kind: "function", container: null, signature: "export function formatPrice(cents) {", path: "src/price.js", startLine: 1, endLine: 3, endKnown: true, role: "source" }],
+      references: [
+        { path: "src/index.js", startLine: 2, endLine: 2, kind: "import", role: "source", text: "import { formatPrice } from './price.js';" },
+        { path: "test/price.test.js", startLine: 4, endLine: 4, kind: "reference", role: "test", text: "expect(formatPrice(150))" },
+      ],
+    };
+    const page = text(html(createElement(SymbolResults, { repo: STATES.full, data: found })));
+    expect(page).toContain("1 definition of formatPrice");
+    expect(page).toContain("2 usages: 1 in source, 1 in tests");
+    expect(page).toContain("Definitions are not detected in elixir files");
+    const missing = text(html(createElement(SymbolResults, { repo: STATES.partial, data: { ...found, definitions: [], references: [], unsupportedLanguages: [] } })));
+    expect(missing).toContain("No definition of formatPrice found");
+    expect(missing).toContain("this is a partial index, so it may be defined in a file that was not indexed");
+  });
+
+  it("explains unsupported languages and run-time imports in the file viewer", () => {
+    const base = { commitSha: "a".repeat(40), content: "", githubUrl: "https://github.com/o/n/blob/a/x", file: { path: "README.md", language: "markdown", size: 1, status: "indexed" as const, skipReason: null, lineCount: 1, chunkCount: 1, secretsRedacted: 0 } };
+    const unsupported = text(html(createElement(CodeMap, { repoId: "r1", path: "README.md", data: { ...base, outline: null, imports: null, dynamicImports: [] } })));
+    expect(unsupported).toContain("Definitions are not detected in markdown files.");
+    expect(unsupported).toContain("Imports are not analysed for markdown files.");
+    const js = text(html(createElement(CodeMap, {
+      repoId: "r1",
+      path: "src/index.js",
+      data: { ...base, file: { ...base.file, path: "src/index.js", language: "javascript" }, outline: [], imports: [], dynamicImports: [{ line: 3, text: "require(name)" }] },
+    })));
+    expect(js).toContain("No functions, classes or other definitions were found in this file.");
+    expect(js).toContain("1 import is computed at run time and cannot be followed (line 3).");
   });
 });
 

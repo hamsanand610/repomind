@@ -1,13 +1,16 @@
 import type {
   ApiErrorBody,
+  ArchitectureResponse,
   AskResponse,
   FileContentResponse,
   FileListResponse,
   HealthResponse,
+  ImportersResponse,
   RepoListResponse,
   RepoSummary,
   SearchResponse,
   SessionResponse,
+  SymbolsResponse,
 } from '../../shared/api.ts'
 import type { Discovery } from '../../shared/discovery.ts'
 
@@ -88,6 +91,9 @@ export const api = {
   file: (id: string, path: string) => request<FileContentResponse>('GET', `${repoPath(id)}/file?path=${encodeURIComponent(path)}`),
   search: (id: string, q: string) => request<SearchResponse>('GET', `${repoPath(id)}/search?q=${encodeURIComponent(q)}`),
   ask: (id: string, question: string) => request<AskResponse>('POST', `${repoPath(id)}/ask`, { question }),
+  symbols: (id: string, q: string) => request<SymbolsResponse>('GET', `${repoPath(id)}/symbols?q=${encodeURIComponent(q)}`),
+  importers: (id: string, path: string) => request<ImportersResponse>('GET', `${repoPath(id)}/importers?path=${encodeURIComponent(path)}`),
+  architecture: (id: string) => request<ArchitectureResponse>('GET', `${repoPath(id)}/architecture`),
 }
 
 export function errorMessage(error: unknown): string {
