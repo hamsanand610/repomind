@@ -15,7 +15,9 @@ describe("priorityTier", () => {
     ["index.d.ts", 1],
     ["docs/pages/intro.md", 2],
     ["CHANGELOG.md", 2],
-    ["docs/conf.py", 2],
+    ["docs/conf.py", 1], // code, even under docs/
+    ["website/src/pages/index.js", 1], // babel/website keeps its site's code under website/
+    ["website/blog/2024-01-01-release.md", 2],
     ["tests/test_basic.py", 3],
     ["src/util.test.ts", 3],
     ["examples/naval/naval.py", 4],

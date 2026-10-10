@@ -102,7 +102,9 @@ export function priorityTier(path: string): Tier {
   if (dirs.length === 0 && (/^(readme|license|licence)(\..*)?$/.test(name) || MANIFESTS.has(name))) return 0;
   if (dirs.some((dir) => AUX_SEGMENTS.has(dir)) || (DOC_ROOTS.has(dirs[0]) && dirs.slice(1).some((dir) => LOCALE.test(dir)))) return 4;
   if (isTestPath(path)) return 3;
-  if (DOC_ROOTS.has(dirs[0]) || DOC_EXTENSIONS.test(name)) return 2;
+  // Documentation is decided by file type: code under docs/ or website/ (e.g. a
+  // documentation site's src/) is still source.
+  if (DOC_EXTENSIONS.test(name)) return 2;
   return 1;
 }
 
