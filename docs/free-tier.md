@@ -69,7 +69,7 @@ These numbers come from the isolated evaluation deployment running the productio
 | Repositories per account | 5 | — |
 
 **Usage on 2026-10-10, from the ledgers:**
-- **Workers AI:** about 6,900 of 10,000 Neurons (production 1,013, local evaluation about 3,270, Cloudflare evaluation about 2,600).
+- **Workers AI:** about 6,930 of 10,000 Neurons (production 1,013, local evaluation about 3,270, Cloudflare evaluation 2,653).
 - **D1 rows written:** about 41,000 of 100,000 (production about 11,000, evaluation about 30,000 including deletion).
 
 ## Unknowns that block design decisions
