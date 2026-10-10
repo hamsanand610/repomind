@@ -1,4 +1,4 @@
-import { priorityTier } from "../shared/ingest/admission.ts";
+import { isTestPath } from "../shared/ingest/admission.ts";
 import { identifierWords } from "../shared/ingest/identifiers.ts";
 import type { Database } from "./platform.ts";
 import { HttpError } from "./http.ts";
@@ -83,7 +83,7 @@ export function rerankHits<T extends { path: string; text: string; score: number
   return hits
     .map((hit, index) => {
       let multiplier = 1;
-      if (priorityTier(hit.path) === 2) multiplier *= 0.6;
+      if (isTestPath(hit.path)) multiplier *= 0.6;
       const path = hit.path.toLowerCase();
       if (wanted.some((term) => path.includes(term))) multiplier *= 1.5;
       if (definesTerms(hit.text, wanted)) multiplier *= 2;

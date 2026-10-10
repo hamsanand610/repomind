@@ -83,6 +83,8 @@ const ENTRY_DIRS = new Set(["src", "app", "lib", "source", "cmd", "bin", "server
 /** Languages that say what a project is written in; data and prose formats do not. */
 const NON_CODE = new Set(["text", "markdown", "restructuredtext", "asciidoc", "json", "yaml", "toml", "ini", "xml"]);
 export const MAX_CONTEXT_FILES = 6;
+/** Root files and source code; documentation, tests, examples and CI files do not represent a language. */
+const SOURCE_TIER = 1;
 
 /** Ordinals of the files to use as evidence for the given intents, in priority order. */
 export function selectContextFiles(files: FileInfo[], intents: Intent[], declaredEntries: string[] = []): number[] {
@@ -119,14 +121,14 @@ export function selectContextFiles(files: FileInfo[], intents: Intent[], declare
   // One representative file for each of the main languages, by indexed lines.
   const lines = new Map<string, number>();
   for (const file of files) {
-    if (!NON_CODE.has(file.language) && priorityTier(file.path) <= 1) lines.set(file.language, (lines.get(file.language) ?? 0) + file.lineCount);
+    if (!NON_CODE.has(file.language) && priorityTier(file.path) <= SOURCE_TIER) lines.set(file.language, (lines.get(file.language) ?? 0) + file.lineCount);
   }
   const languages = [...lines.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([language]) => language);
   const representatives = languages.map(
     (language) =>
       entryList.find((file) => file.language === language) ??
       files
-        .filter((file) => file.language === language && priorityTier(file.path) <= 1)
+        .filter((file) => file.language === language && priorityTier(file.path) <= SOURCE_TIER)
         .sort((a, b) => b.lineCount - a.lineCount || a.path.localeCompare(b.path))[0],
   );
 

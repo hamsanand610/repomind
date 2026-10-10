@@ -30,7 +30,7 @@ export const DEFAULT_ADMISSION_LIMITS: AdmissionLimits = {
   maxTreeEntries: 20_000,
 };
 
-export type Tier = 0 | 1 | 2 | 3;
+export type Tier = 0 | 1 | 2 | 3 | 4;
 
 export interface AdmittedFile {
   path: string;
@@ -72,17 +72,37 @@ const MANIFESTS = new Set([
   "tsconfig.json", "wrangler.toml", "wrangler.jsonc", "wrangler.json",
 ]);
 const TEST_SEGMENTS = new Set(["test", "tests", "__tests__", "spec", "specs", "e2e", "testing"]);
-const AUX_SEGMENTS = new Set(["examples", "example", "samples", "sample", "fixtures", "fixture", "benchmarks", "bench", "scripts", "demo", "demos"]);
+const AUX_SEGMENTS = new Set([
+  "examples", "example", "samples", "sample", "fixtures", "fixture", "benchmarks", "bench", "scripts", "demo", "demos",
+  ".github", ".gitlab", ".circleci", ".devcontainer", ".vscode", ".idea", ".husky", "i18n", "l10n", "locales", "locale", "translations",
+]);
+const DOC_ROOTS = new Set(["docs", "doc", "documentation", "website", "site"]);
+const DOC_EXTENSIONS = /\.(?:md|mdx|markdown|rst|adoc|txt)$/;
+/** Language codes used as translation folders under a docs root, e.g. docs/es/, docs/zh-cn/. */
+const LOCALE = /^(?:ar|bg|bn|ca|cs|da|de|el|es|fa|fi|fr|he|hi|hu|id|it|ja|ko|ms|nb|nl|no|pl|pt|ro|ru|sk|sv|ta|th|tr|uk|ur|vi|zh)(?:[-_][a-z]{2,4})?$/;
+
+/**
+ * Admission order when a repository does not fit: the README and manifests,
+ * then source code, documentation, tests, and finally examples, CI files and
+ * translated docs. Source comes before documentation so a partial index can
+ * still answer questions about the code.
+ */
+export const TIER_NAMES = ["README and manifests", "source", "documentation", "tests", "examples, CI files and translations"] as const;
+
+export function isTestPath(path: string): boolean {
+  const segments = path.toLowerCase().split("/");
+  const name = segments[segments.length - 1];
+  return segments.slice(0, -1).some((dir) => TEST_SEGMENTS.has(dir)) || /(\.|_)(test|spec)\.[a-z0-9]+$/.test(name) || /^test_.*\.py$/.test(name);
+}
 
 export function priorityTier(path: string): Tier {
   const segments = path.toLowerCase().split("/");
   const name = segments[segments.length - 1];
   const dirs = segments.slice(0, -1);
-  if (dirs.length === 0 && /^(readme|license|licence|contributing|security|changelog)(\..*)?$/.test(name)) return 0;
-  if (dirs.length === 0 && MANIFESTS.has(name)) return 0;
-  if (dirs[0] === "docs" && name.endsWith(".md")) return 0;
-  if (dirs.some((dir) => TEST_SEGMENTS.has(dir)) || /(\.|_)(test|spec)\.[a-z0-9]+$/.test(name) || /^test_.*\.py$/.test(name)) return 2;
-  if (dirs.some((dir) => AUX_SEGMENTS.has(dir))) return 3;
+  if (dirs.length === 0 && (/^(readme|license|licence)(\..*)?$/.test(name) || MANIFESTS.has(name))) return 0;
+  if (dirs.some((dir) => AUX_SEGMENTS.has(dir)) || (DOC_ROOTS.has(dirs[0]) && dirs.slice(1).some((dir) => LOCALE.test(dir)))) return 4;
+  if (isTestPath(path)) return 3;
+  if (DOC_ROOTS.has(dirs[0]) || DOC_EXTENSIONS.test(name)) return 2;
   return 1;
 }
 
@@ -135,13 +155,10 @@ export function admitRepository(
       continue;
     }
     const estChunks = size === 0 ? 0 : Math.ceil(size / limits.bytesPerChunkLow);
-    if (estChunks > shareCap) {
-      exclude({ path: file.path, reason: "exceeds_repository_share", estChunks });
-      continue;
-    }
     optimistic += size === 0 ? 0 : Math.ceil(size / limits.bytesPerChunkHigh);
     candidates.push({ path: file.path, language: file.language, size, estChunks, tier: priorityTier(file.path) });
   }
+  const candidateCount = candidates.length;
 
   const conservative = candidates.reduce((sum, file) => sum + file.estChunks, 0);
   const estimate = { conservative, optimistic };
@@ -157,10 +174,19 @@ export function admitRepository(
     );
   }
 
-  candidates.sort((a, b) => a.tier - b.tier || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  // A repository that fits is indexed whole. Only when it must be cut may a
+  // single file use at most maxFileShare of the budget, so one huge file
+  // cannot crowd out the rest.
+  const fits = conservative <= limits.maxChunksPerRepo;
+  const ranked = fits ? candidates : candidates.filter((file) => {
+    if (file.estChunks <= shareCap) return true;
+    exclude({ path: file.path, reason: "exceeds_repository_share", estChunks: file.estChunks });
+    return false;
+  });
+  ranked.sort((a, b) => a.tier - b.tier || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   const admitted: AdmittedFile[] = [];
   let admittedEstimate = 0;
-  for (const file of candidates) {
+  for (const file of ranked) {
     if (admittedEstimate + file.estChunks <= limits.maxChunksPerRepo) {
       admitted.push({ ...file, ordinal: admitted.length });
       admittedEstimate += file.estChunks;
@@ -169,20 +195,19 @@ export function admitRepository(
     }
   }
 
-  const partial = admitted.length < candidates.length;
-  const tierNames = ["docs and manifests", "source", "tests", "examples and scripts"];
-  const includedTiers = [...new Set(admitted.map((file) => tierNames[file.tier]))].join(", ");
+  const partial = admitted.length < candidateCount;
+  const includedTiers = [...new Set(admitted.map((file) => TIER_NAMES[file.tier]))].join(", ");
   return {
     report: {
       decision: partial ? "partial" : "full",
       reason: partial ? "over_repository_budget" : null,
       message: partial
         ? `This repository needs about ${optimistic.toLocaleString("en-US")}–${conservative.toLocaleString("en-US")} chunks, more than the ` +
-          `${limits.maxChunksPerRepo.toLocaleString("en-US")}-chunk limit. RepoMind indexes ${admitted.length} of ${candidates.length} files ` +
-          `(${includedTiers}) and skips the rest; answers will not cite skipped files.`
+          `${limits.maxChunksPerRepo.toLocaleString("en-US")}-chunk limit. RepoMind indexes ${admitted.length} of ${candidateCount} files ` +
+          `(${includedTiers}, in that order of priority) and skips the rest; answers will not cite skipped files.`
         : `All ${admitted.length} supported files fit within the ${limits.maxChunksPerRepo.toLocaleString("en-US")}-chunk limit.`,
       treeEntries,
-      candidateFiles: candidates.length,
+      candidateFiles: candidateCount,
       admittedFiles: admitted.length,
       estimate,
       admittedEstimate,
