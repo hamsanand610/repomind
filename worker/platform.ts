@@ -53,6 +53,7 @@ export interface AppEnv {
   DAILY_NEURON_BUDGET?: string;
   MAX_CHUNKS_PER_REPO?: string;
   MAX_REPOS_PER_OWNER?: string;
+  MAX_STORED_VECTORS?: string;
 }
 
 export interface Config {
@@ -62,6 +63,8 @@ export interface Config {
   dailyNeuronBudget: number;
   maxChunksPerRepo: number;
   maxReposPerOwner: number;
+  /** Vectors this index may hold before embedding stops (Free: 5M stored dimensions per account). */
+  maxStoredVectors: number;
 }
 
 export function readConfig(env: AppEnv): Config {
@@ -69,14 +72,19 @@ export function readConfig(env: AppEnv): Config {
     const parsed = Number.parseInt(value ?? "", 10);
     return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
   };
+  const embeddingDims = int(env.EMBEDDING_DIMS, 512, 32, 1536);
   return {
     embeddingModel: env.EMBEDDING_MODEL || "@cf/qwen/qwen3-embedding-0.6b",
-    embeddingDims: int(env.EMBEDDING_DIMS, 512, 32, 1536),
+    embeddingDims,
     llmModel: env.LLM_MODEL || "@cf/google/gemma-4-26b-a4b-it",
     // Workers Free allows 10,000 Neurons/day; stop well before it.
     dailyNeuronBudget: int(env.DAILY_NEURON_BUDGET, 8_500, 0, 10_000),
     maxChunksPerRepo: int(env.MAX_CHUNKS_PER_REPO, 1_500, 50, 20_000),
     maxReposPerOwner: int(env.MAX_REPOS_PER_OWNER, 5, 1, 100),
+    // Vectorize Free stores 5M dimensions per account, shared by every index.
+    // Default to 80% of that (7,812 vectors at 512 dims), leaving room for the
+    // evaluation index and for counts that lag behind recent writes.
+    maxStoredVectors: int(env.MAX_STORED_VECTORS, Math.floor(4_000_000 / embeddingDims), 0, 1_000_000),
   };
 }
 
