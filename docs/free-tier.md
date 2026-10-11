@@ -77,6 +77,21 @@ These numbers come from the isolated evaluation deployment running the productio
 | ZIP archive | 50 MB, 20,000 entries, 512 MB declared expanded size | Checked in the browser; the archive never reaches the Worker ([ADR 0003](adr/0003-zip-uploads.md)) |
 | One upload request | 8 files or 256 KB (one file up to 400 KB); JSON body up to 640 KB | Rejected with 413; the same size as one GitHub indexing step |
 | Unfinished upload | 24 hours without progress | Stopped by the cron trigger, and its partial data removed |
+| Private repositories listed for choosing | 300 (from up to 3 GitHub App installations) | The list says when it is truncated |
+| Private access re-check | at most every 10 minutes per repository, for content | One GitHub API call; reads are refused if access cannot be confirmed for an hour |
+| Lost access | 7 days | Then the repository is deleted by the cron trigger |
+
+**Why private repositories fit the Free plan ([ADR 0004](adr/0004-private-github-repositories.md)):**
+- **No new Cloudflare resources.** One D1 table (`github_connections`), three columns on `repos`, WebCrypto, and the existing cron trigger.
+- **Free on GitHub too.** GitHub Apps cost nothing. User tokens get 5,000 GitHub API requests an hour per user, and rate limits wait as for public repositories.
+- **Subrequests stay small.** Completing a connection makes 2 calls to GitHub, adding a repository 3–4, and an indexing step at most 8 file reads plus a token refresh.
+- **Measured on the isolated deployment (Worker CPU):**
+  - connect 3 ms, complete 1 ms;
+  - listing or adding without a connection 7 ms, disconnect 8 ms;
+  - public GitHub steps 22–39 ms;
+  - ZIP batch 16 ms.
+
+  There were 0 errors.
 
 **Why uploads fit the Free plan:** each upload request does the same work as one GitHub indexing step. Measured on Cloudflare, upload batches used 18 ms CPU at p50 and 28 ms at most (8 batches for cobra's 62 files). Creating an upload used 12 ms; cancelling used 8 ms. No upload request failed. Uploads use no Workers AI until embedding, which is the same as for GitHub repositories. D1 writes per chunk are also the same as for GitHub. The 100 MB request-body limit is never approached.
 

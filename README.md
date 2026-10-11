@@ -12,6 +12,34 @@ It never modifies, commits to or executes the repositories and archives it reads
 
 Every statement links to its lines. Evaluation: [docs/eval-results.md](docs/eval-results.md).
 
+## Private GitHub repositories
+
+RepoMind can index private repositories through a GitHub App that you register. Design and threat model: [ADR 0004](docs/adr/0004-private-github-repositories.md).
+
+**What RepoMind can do on GitHub:**
+- **Permissions:** Contents: read-only and Metadata: read-only. Nothing else, so it cannot push, create branches, edit issues or change anything.
+- **Scope:** a user's token reaches only repositories that both the user can read and the app is installed on.
+
+**How credentials are protected:**
+- Connecting uses GitHub's web flow with `state` and PKCE, bound to your RepoMind session.
+- Tokens are encrypted (AES-256-GCM) before they are stored in D1. They stay on the server and are sent only to GitHub.
+
+**How access is enforced:**
+- Search, files, Ask and code navigation are allowed only while GitHub still confirms your access, re-checked at least every 10 minutes.
+- Revoking the app on GitHub, or losing access to a repository, hides its index at once. After 7 days without access, it is deleted.
+- **Disconnect GitHub** revokes the authorization and deletes every private index you added. Public repositories and ZIP uploads are not affected.
+
+**Setup (owner, once):**
+1. **Create the app:** GitHub → Settings → Developer settings → GitHub Apps → New GitHub App.
+   - **Callback URL:** `https://<your-worker>/github/callback`
+   - **Expire user tokens:** on. **Request user authorization during installation:** off. **Webhook:** inactive.
+   - **Repository permissions:** Contents → Read-only, Metadata → Read-only.
+2. **Generate a client secret.** No private key is needed.
+3. **Set the Worker secrets** `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_CLIENT_SECRET` and `GITHUB_TOKEN_KEY` with `npx wrangler secret put <NAME>`. `GITHUB_TOKEN_KEY` is 32 random bytes in base64.
+4. **Install the app** on the repositories to index, then use **Connect GitHub** on the repositories page.
+
+Until all four secrets are set, the private-repository section stays hidden.
+
 ## ZIP uploads
 
 **How it works:** the archive is read in the browser and never sent to the server. Only the supported source and documentation files that admission selects are decompressed and uploaded, a few at a time. The server checks every file against the archive listing (path, order, size, CRC-32) before indexing it. Design and threat model: [ADR 0003](docs/adr/0003-zip-uploads.md).
@@ -68,6 +96,7 @@ See [ADR 0001](docs/adr/0001-architecture-baseline.md) for the decisions and [do
 | `npm run eval:context` | Repository-context evaluation (overview, languages, entry point, feature, absent, false premise, injection) on three pinned repositories; needs `eval:server` |
 | `npm run eval:scale` | Larger-repository evaluation on Cloudflare against the isolated eval deployment (`wrangler.eval-remote.jsonc`): admission, indexing time, search, answers with checked citations, UI states, AI usage and D1 rows |
 | `npm run eval:code` | Code-intelligence evaluation (definitions, usages, imports, importers, dependencies, overview, plus a random held-out sample) on seven pinned repositories, in process, no AI quota; `eval/code-intel-remote.ts` repeats it on the isolated Cloudflare deployment |
+| `eval/github-remote.ts` | Private-repository plumbing on the isolated Cloudflare deployment with placeholder app settings: authorize URL, PKCE, cookie flags, state checks, GitHub's rejection of an unknown app, "connect first" answers; public GitHub and ZIP indexing on the same build |
 | `eval/upload-remote.ts` | ZIP uploads on the isolated Cloudflare deployment: archives built from pinned repositories, uploaded like the browser does, checked for paths, lines, search, symbols, duplicates, cancellation and deletion |
 | `npm run deploy` | Build and deploy. Requires Cloudflare login; deploy only when authorized. |
 
@@ -89,7 +118,8 @@ public/     Static files, including _headers (security headers for assets)
 ## Secrets
 
 Never commit secrets:
-- **Production:** use `wrangler secret put <NAME>`.
+- **Production:** use `wrangler secret put <NAME>`. This includes `SESSION_SECRET`, `INVITE_CODES` and, for private repositories, `GITHUB_APP_CLIENT_SECRET` and `GITHUB_TOKEN_KEY`.
 - **Local development:** use `.dev.vars`, which is git-ignored.
+- **Rotating `GITHUB_TOKEN_KEY`** makes stored GitHub tokens unreadable; users then connect again.
 
 Nothing secret may use a `VITE_` prefix, because those values ship to the browser.

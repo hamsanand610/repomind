@@ -413,3 +413,67 @@ Design: [ADR 0003](adr/0003-zip-uploads.md). No Workers AI quota was used.
 - **Synthetic archives:** the archives were built by our own test writer, not by every real ZIP tool. Real archives from macOS Finder, Windows "Send to", 7-Zip and GitHub use the same stored/deflate format, but were not each tested.
 - **No production upload by automation:** that would need a production sign-in. The authenticated flow was verified on the isolated deployment, which runs the same code.
 - **Browser support:** `DecompressionStream("deflate-raw")` is required. Very old browsers get an error instead of an upload.
+
+# Private GitHub repository evaluation (2026-10-11)
+
+Design: [ADR 0004](adr/0004-private-github-repositories.md). Results are kept apart by where they ran.
+
+## Local (Node, real SQLite schema, GitHub fake)
+
+**The fake.** `tests/support/github-app-fake.ts` behaves like GitHub for an app with Contents and Metadata read-only:
+- PKCE codes, 8-hour tokens and single-use refresh tokens;
+- installations and per-user access;
+- pinned commits, trees and contents, and rename redirects;
+- revocation, rate limits and outages.
+
+Every request is logged with its `Authorization` header.
+
+**The tests.** `tests/unit/private-repos.test.ts` (22 tests) and `tests/unit/secrets.test.ts` (3) cover:
+
+| Area | Checked |
+|---|---|
+| Configuration | Off unless all four settings are present and the key is 32 bytes |
+| Connecting | Authorize URL with exact callback, `state` and S256 PKCE, and no scopes. State cookie HttpOnly, Secure, SameSite=Strict, `Path=/api/github`. Refused: wrong state, no cookie, another user's session, tampered cookie, expired (10 min), reused code, no session, cross-origin. Only sealed tokens in D1; responses contain only `{connected, login}` |
+| Listing | Only repositories both the user and the app can read (not installed, or another user's: excluded) |
+| Indexing | Pinned commit through the contents API with `ref=<sha>`. No request to `raw.githubusercontent.com`, and no token sent to any host but `api.github.com`. Search, file, symbols, overview and Ask with citations pinned to the commit and exact lines |
+| Adding | Forged id, forged name, a repository the token cannot read, or a non-existent one: the same 404, with no GitHub text. Malformed input: 400. The public flow never reaches a private repository |
+| Isolation | Another RepoMind user (with their own GitHub connection) gets 404 on all 13 repository endpoints, cannot add the repository, and does not see it listed |
+| Expiry | An expired token is refreshed; two concurrent refreshes use one refresh token and both succeed (regression test for a real race found here) |
+| Revocation | All content endpoints answer 403 (`github_access_revoked`), re-index too. The summary keeps the name but no paths. Tokens are erased |
+| Lost access | 403 (`github_access_lost`). Access returning lifts the block. After 7 days the repository, chunks and vectors are deleted |
+| Rename | Followed by id. A different repository that takes the name is refused |
+| Disconnect | Grant revoked at GitHub (Basic auth with the client credentials), connection deleted, private indexes and vectors deleted, ZIP upload kept |
+| Misconfiguration | A wrong client secret never deletes connections (regression test: it used to count as revocation) |
+| Rate limit / outage / SSO | 429 without GitHub's text. A secondary limit (403 with Retry-After) is a rate limit. Reads allowed within one hour of the last confirmed check, then 503. A 403 without rate-limit headers (organisation SSO) blocks at once as lost access (found by the security review) |
+| Interruptions | A failed download is retried. Access lost mid-indexing fails the version and removes its partial chunks. Cancelling removes partial data. Re-indexing pins the new commit with the server's own listing (a sent listing is ignored) and retires the old version |
+| Prompt injection | A private README's instructions appear only inside evidence. No token is ever in a prompt |
+
+All earlier suites pass unchanged, which covers public GitHub repositories and ZIP uploads.
+
+## Isolated Cloudflare deployment (placeholder app settings)
+
+`eval/github-remote.ts` ran against the temporary evaluation Worker with deliberately invalid placeholder app settings and a fresh random token key. The Worker and its secrets were deleted afterwards. **11/11 checks passed:**
+
+| Check | Result |
+|---|---|
+| Status | Configured, not connected, no token fields |
+| Authorize URL | Exact callback, state, S256 PKCE |
+| State cookie | HttpOnly, Secure, SameSite=Strict, `Path=/api/github` |
+| Wrong state | 400 |
+| Real GitHub OAuth endpoint, placeholder app and code | Rejected. RepoMind answered 400 with its own message, no GitHub text, cookie cleared |
+| Replaying the cleared state | 400 |
+| Listing or adding without a connection | 403 "Connect GitHub first." |
+| Disconnect without a connection | 200, nothing deleted |
+| Public GitHub repository (expressjs/cors) | Still indexes and searches |
+| ZIP upload | Still indexes and searches |
+
+**Worker CPU:** 1–8 ms for the GitHub endpoints, 0 errors. **Workers AI:** 0 Neurons.
+
+## Production
+
+Health, the new routes' session requirement and the SPA callback route were checked after deployment. A real connection was not tested: it needs the owner's GitHub App and a GitHub sign-in in a browser, which automation must not do.
+
+## Limits of this evaluation
+
+- **GitHub is simulated locally.** The fake follows GitHub's documented behaviour (checked 2026-10-11), but a real connection has not been tested. The owner's first connection is the first real-GitHub test.
+- **No webhook.** Revocation is detected at the next token use or access check (within 10 minutes for reads), not instantly.

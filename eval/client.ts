@@ -24,6 +24,9 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
 
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** The session cookie from signInLocally ("name=value"), for scripts that send their own requests. */
+export const sessionCookie = () => cookie;
+
 export async function github(path: string): Promise<unknown> {
   const response = await fetch(`https://api.github.com${path}`, { headers: { Accept: "application/vnd.github+json", "User-Agent": "repomind-eval" } });
   if (!response.ok) throw new Error(`GitHub ${response.status} for ${path}`);

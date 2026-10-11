@@ -70,6 +70,14 @@ It may suggest improvements, but it must state that it cannot apply them.
 - **Every upload endpoint is owner-scoped, same-origin and rate-limited.** One upload runs per repository at a time; names are unique per owner, and the per-owner repository cap applies.
 - **Abandoned or cancelled uploads lose their partial data automatically.**
 
+**Private GitHub repositories** ([ADR 0004](0004-private-github-repositories.md)), covered by `tests/unit/private-repos.test.ts` and `tests/unit/secrets.test.ts`:
+- **Least privilege.** A GitHub App with Contents and Metadata read-only and nothing else. User access tokens reach only what both the user and the app can read.
+- **Connecting.** The web flow uses `state` and PKCE (S256), bound to the RepoMind session in a signed, HttpOnly, Secure, SameSite=Strict cookie with a 10-minute expiry, and an exact callback URL.
+- **Token storage.** Tokens are sealed with AES-256-GCM (Worker secret key; owner- and field-bound) before they reach D1. They are sent only to `github.com/login/oauth` and `api.github.com`, and never appear in responses, logs or errors.
+- **Adding a repository.** The repository is looked up again with the owner's token, and GitHub's immutable id must match.
+- **Content endpoints.** Every one requires access confirmed with GitHub within the last 10 minutes.
+- **Revocation and lost access.** Both block reads at once. Disconnect revokes the grant and deletes the private indexes. Access lost for 7 days deletes the repository.
+
 **Planned:**
 - M2: authentication and ownership checks on every stateful or quota-consuming endpoint; repository-relative path normalisation; ingestion size and count caps; secret redaction in indexed content.
 - M4: prompt-injection handling.
@@ -158,3 +166,4 @@ ZIP upload is in scope but follows the GitHub path (M6) and is extracted in the 
 | D23 | Admission treats only documentation file types (Markdown, MDX, reStructuredText, AsciiDoc, plain text) under `docs/` or `website/` as documentation. Code there is source. Reason: babel/website's React site code was ranked with the docs and mostly cut. | Implemented; regression test | 2026-10-10 |
 | D24 | The architecture overview marks every statement as "From the files" (quoted or counted, with a line citation) or "Inferred" (a naming convention). README and manifest text is quoted verbatim, never interpreted, so instructions inside a repository cannot become facts. A declared dependency is never shown as used unless an import statement for it is found. | Implemented; prompt-injection test | 2026-10-10 |
 | D25 | ZIP uploads ([ADR 0003](0003-zip-uploads.md)). The browser reads and checks the archive and sends only admitted files' bytes in plan order, in small batches. The server validates the manifest and every file (path, order, size, CRC-32) and indexes each batch with the GitHub step code. No R2, Queues or server-side archive parsing. Migration 0004 adds `repos.source`. Unfinished uploads expire after 24 hours, and cancelled or expired uploads lose their partial data. | Implemented; evaluated locally, in Chromium and on Cloudflare | 2026-10-10 |
+| D26 | Private repositories through a GitHub App with user access tokens ([ADR 0004](0004-private-github-repositories.md)). Permissions are Contents and Metadata read-only. Tokens are sealed in D1. Access is re-checked with GitHub at least every 10 minutes for content. Disconnect deletes the private indexes, and lost access deletes them after 7 days. Migration 0005. Off until the owner registers the app. | Implemented; local and isolated-Cloudflare validation; a real connection awaits the owner's app | 2026-10-11 |
