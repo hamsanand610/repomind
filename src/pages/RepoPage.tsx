@@ -11,11 +11,12 @@ import { OverviewTab } from './repo/OverviewTab.tsx'
 import { SearchTab } from './repo/SearchTab.tsx'
 
 export type Tab = 'overview' | 'files' | 'search' | 'ask'
-const TABS: Array<{ id: Tab; label: string; path: string }> = [
-  { id: 'overview', label: 'Overview', path: '' },
-  { id: 'files', label: 'Files', path: '/files' },
-  { id: 'search', label: 'Search', path: '/search' },
-  { id: 'ask', label: 'Ask', path: '/ask' },
+/** Each tab says what it holds, so Architecture, Symbols and Imports can be found. */
+const TABS: Array<{ id: Tab; label: string; path: string; hint: string }> = [
+  { id: 'overview', label: 'Overview', path: '', hint: 'Index status, the architecture summary, and what was indexed.' },
+  { id: 'files', label: 'Files', path: '/files', hint: 'Read any file with its outline, the files it imports, and the files that import it.' },
+  { id: 'search', label: 'Search', path: '/search', hint: 'Find exact words, or a function or class name to see its definition and every usage.' },
+  { id: 'ask', label: 'Ask', path: '/ask', hint: 'Ask in plain English; every answer cites the files and lines it used.' },
 ]
 
 /**
@@ -151,12 +152,20 @@ export function RepoPage({ id, tab }: { id: string; tab: Tab }) {
           {TABS.map((item) => {
             const href = `${base}${item.path}`
             return (
-              <a key={item.id} href={href} onClick={linkHandler(href)} className={item.id === tab ? 'tab tab--active' : 'tab'} aria-current={item.id === tab ? 'page' : undefined}>
+              <a
+                key={item.id}
+                href={href}
+                onClick={linkHandler(href)}
+                className={item.id === tab ? 'tab tab--active' : 'tab'}
+                aria-current={item.id === tab ? 'page' : undefined}
+                title={item.hint}
+              >
                 {item.label}
               </a>
             )
           })}
         </nav>
+        <p className="tab-hint">{TABS.find((item) => item.id === tab)?.hint}</p>
       </header>
       {error && <ErrorNotice error={error} onRetry={reload} />}
       {repo.access && repo.access !== 'ok' && (

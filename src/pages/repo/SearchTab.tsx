@@ -140,9 +140,37 @@ export function SearchTab({ repo }: { repo: RepoSummary }) {
           Search
         </button>
       </form>
-      <p className="hint">
-        Matches whole words and identifier prefixes in the indexed commit. All terms must appear in the same passage. A single identifier also shows where it is defined and used.
-      </p>
+      {q ? (
+        <p className="hint">
+          Matches whole words and identifier prefixes in the indexed commit. All terms must appear in the same passage. A single identifier also shows where it is defined and used.
+        </p>
+      ) : (
+        <section className="card stack" aria-labelledby="search-guide-title">
+          <h2 id="search-guide-title" className="card__title">
+            How to search
+          </h2>
+          <dl className="search-guide">
+            <div>
+              <dt>A function, class or variable name</dt>
+              <dd>
+                For example <code>handleLogin</code> or <code>UserService</code>: shows where it is defined, then every place it is used, each linked
+                to its line.
+              </dd>
+            </div>
+            <div>
+              <dt>A few words that appear together</dt>
+              <dd>
+                For example <code>rate limit</code>: finds passages that contain all of them. Word beginnings match too: <code>auth</code> finds{' '}
+                <code>authenticate</code>.
+              </dd>
+            </div>
+            <div>
+              <dt>A question in your own words</dt>
+              <dd>Search is exact. To ask by meaning, use the Ask tab; its answers cite the lines they rely on.</dd>
+            </div>
+          </dl>
+        </section>
+      )}
       {loading && <Spinner label="Searching…" />}
       {error && <ErrorNotice error={error} />}
       {result && !loading && result.query === q && (

@@ -1,7 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react'
 import type { RepoSummary } from '../../shared/api.ts'
 import { describeGitHubUrlError, parseGitHubRepoUrl } from '../../shared/github-url.ts'
-import { EmptyState, ErrorNotice, Notice, Progress, Spinner, StatusBadge } from '../components/ui.tsx'
+import { ErrorNotice, Notice, Progress, Spinner, StatusBadge } from '../components/ui.tsx'
 import { ApiError, api, errorMessage } from '../lib/api.ts'
 import { ZipPicker } from '../components/upload.tsx'
 import { discoverRepository } from '../lib/discovery.ts'
@@ -36,11 +36,11 @@ export function ReposPage() {
   const list = (
     <section aria-labelledby="repos-title" className="stack">
       <h2 id="repos-title" className="section-title">
-        Your repositories {repos && <span className="muted">({repos.length} of {limit})</span>}
+        Your repositories
       </h2>
+      {repos && <Allowance used={repos.length} limit={limit} />}
       {error && <ErrorNotice error={error} onRetry={load} />}
       {!repos && !error && <Spinner label="Loading repositories…" />}
-      {repos && repos.length === 0 && <EmptyState title="No repositories yet">Add one below to start indexing.</EmptyState>}
       {repos && repos.length > 0 && (
         <ul className="repo-list">
           {repos.map((repo) => (
@@ -56,42 +56,62 @@ export function ReposPage() {
         <h1>Repositories</h1>
         <p className="lead">Add a codebase, wait until it is searchable, then explore its files and architecture, search it, and ask questions with cited answers.</p>
       </header>
-      {/* Returning users see their repositories first; new users see how to start. */}
-      {repos && repos.length > 0 ? list : <GettingStarted limit={limit} />}
+      {/* Returning users see their repositories first; a new, empty account sees how to start. */}
+      {repos !== null && repos.length === 0 ? <GettingStarted limit={limit} /> : list}
       <h2 className="section-title">Add a repository</h2>
-      {full && <Notice tone="info">You have reached the limit of {limit} repositories. Delete one to add another.</Notice>}
+      {full && (
+        <Notice tone="info" title="All repository slots are used">
+          Your account holds up to {limit} repositories. Delete one you no longer need (open it, then Delete repository) to add another.
+        </Notice>
+      )}
       <AddRepository disabled={full} />
       <UploadRepository disabled={full} />
       <PrivateRepositories disabled={full} onChanged={load} />
-      {!(repos && repos.length > 0) && list}
     </main>
   )
 }
 
-/** For a new account: the three sources, what happens while indexing, and the limits that apply. */
-function GettingStarted({ limit }: { limit: number }) {
+/** "3 of 5 repositories used", with a bar over the real counts. */
+export function Allowance({ used, limit }: { used: number; limit: number }) {
+  const label = `${used} of ${limit} repositories used`
+  return (
+    <div className="allowance">
+      <span className="allowance__label">{label}</span>
+      <div className="progress__track" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={limit} aria-valuenow={used}>
+        <div className="progress__fill" style={{ width: `${Math.min(1, used / Math.max(1, limit)) * 100}%` }} />
+      </div>
+    </div>
+  )
+}
+
+/** For a new account: what RepoMind does, the steps, and the limits that apply. */
+export function GettingStarted({ limit }: { limit: number }) {
   return (
     <section className="card stack" aria-labelledby="start-title">
       <h2 id="start-title" className="card__title">
-        How RepoMind works
+        Welcome to RepoMind
       </h2>
+      <p>
+        Your account is private: only you can see the repositories you add. Here is how to get started.
+      </p>
       <ol className="steps">
         <li>
-          <strong>Add a codebase</strong> from a <em>public GitHub URL</em>, a <em>ZIP of your project</em> (read in your browser; nothing in it is
-          run), or, where enabled, a <em>private GitHub repository</em> you authorize with read-only access.
+          <strong>Add a project</strong> with a <em>public GitHub link</em> or a <em>ZIP file</em> of your code. A ZIP is read in your browser and
+          nothing in it is ever run.
         </li>
         <li>
-          <strong>Wait for indexing.</strong> Files, search, symbols and the architecture overview work as soon as the files are indexed. A
-          semantic index for Ask follows; until it is done, answers use keyword evidence. Large repositories are indexed partially, and RepoMind
-          says so.
+          <strong>Wait a minute or two while it is indexed.</strong> You can browse files and search as soon as the files are in. Very large projects
+          are indexed partially, and RepoMind tells you what was left out.
         </li>
         <li>
-          <strong>Explore and ask.</strong> Every answer cites the exact files and lines it used, or says the evidence isn’t there.
+          <strong>Explore and ask.</strong> Read the architecture summary, search for a function, or ask a question such as “Where is the login
+          handled?”. Answers cite the exact files and lines, or say the evidence isn’t there.
         </li>
       </ol>
       <p className="hint">
-        Limits on the free plan: {limit} repositories per account, 20 new indexing jobs a day, and 100 questions a day (6 a minute).
+        Each account holds up to {limit} repositories and can start 20 indexing jobs and ask 100 questions a day (6 a minute).
       </p>
+      <Allowance used={0} limit={limit} />
     </section>
   )
 }

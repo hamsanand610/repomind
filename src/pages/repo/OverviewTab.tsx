@@ -6,7 +6,7 @@ import { api, errorMessage } from '../../lib/api.ts'
 import { discoverRepository } from '../../lib/discovery.ts'
 import { SKIP_REASON_LABEL, filesIndexed, formatBytes, relativeTime, repoState, repoTitle, semanticOff, shortSha, wasCancelled } from '../../lib/format.ts'
 import { keepArchive, usePrepareArchive } from '../../lib/upload.ts'
-import { navigate } from '../../lib/router.ts'
+import { linkHandler, navigate } from '../../lib/router.ts'
 import { ArchitecturePanel } from './ArchitecturePanel.tsx'
 
 export function OverviewTab({ repo, onChange }: { repo: RepoSummary; onChange: (repo: RepoSummary) => void }) {
@@ -45,7 +45,7 @@ export function OverviewTab({ repo, onChange }: { repo: RepoSummary; onChange: (
           </Notice>
         )}
         {active ? <ActiveIndex version={active} uploaded={repo.source === 'zip'} /> : !indexing && latest?.status !== 'failed' && <p className="muted">No completed index yet.</p>}
-        {(state === 'ready' || state === 'embedding' || state === 'semantic_paused') && <ReadyNotice state={state} off={semanticOff(active)} />}
+        {(state === 'ready' || state === 'embedding' || state === 'semantic_paused') && <ReadyNotice state={state} off={semanticOff(active)} base={`/repos/${encodeURIComponent(repo.id)}`} />}
       </section>
 
       {active?.status === 'ready' && state !== 'blocked' && <ArchitecturePanel repo={repo} />}
@@ -56,19 +56,35 @@ export function OverviewTab({ repo, onChange }: { repo: RepoSummary; onChange: (
 }
 
 /** What works now: search and navigation as soon as files are indexed; Ask improves once the semantic index is done. */
-function ReadyNotice({ state, off }: { state: 'ready' | 'embedding' | 'semantic_paused'; off: boolean }) {
+function ReadyNotice({ state, off, base }: { state: 'ready' | 'embedding' | 'semantic_paused'; off: boolean; base: string }) {
+  const link = (path: string, text: string) => (
+    <a href={`${base}${path}`} onClick={linkHandler(`${base}${path}`)}>
+      {text}
+    </a>
+  )
+  const next = (
+    <>
+      Read the architecture summary below, browse the {link('/files', 'files')}, {link('/search', 'search for a function')}, or{' '}
+      {link('/ask', 'ask a question')}.
+    </>
+  )
+  // One paragraph: the notice body stacks its children.
   if (state === 'ready') {
     return (
-      <Notice tone="success">
-        Ready. Explore the files, search, or ask a question.
-        {off && ' This server has no semantic index, so answers use keyword evidence.'}
+      <Notice tone="success" title="Ready">
+        <p>
+          {next}
+          {off && ' This server has no semantic index, so answers use keyword evidence.'}
+        </p>
       </Notice>
     )
   }
   return (
     <Notice tone="success" title="Search ready">
-      Files, search, symbols and the architecture overview work now. The semantic index, which helps Ask match questions by meaning, is{' '}
-      {state === 'embedding' ? 'still building' : 'paused (see above)'}; until it is done, answers use keyword evidence.
+      <p>
+        {next} The semantic index, which helps Ask match questions by meaning, is {state === 'embedding' ? 'still building' : 'paused (see above)'};
+        until it is done, answers use keyword evidence.
+      </p>
     </Notice>
   )
 }
@@ -148,7 +164,8 @@ function ActiveIndex({ version, uploaded }: { version: VersionSummary; uploaded:
         </Notice>
       )}
       {!semanticDone && !semanticOff(version) && <Progress label="Semantic index (helps Ask match by meaning)" value={version.chunksEmbedded} total={version.chunksEmbeddable} />}
-      {version.embeddingNote && <Notice tone="warning">{version.embeddingNote}</Notice>}
+      {/* On a server without a semantic index, the ready notice already says so. */}
+      {version.embeddingNote && !semanticOff(version) && <Notice tone="warning">{version.embeddingNote}</Notice>}
       {semanticDone && version.chunksEmbeddable > 0 && <p className="muted">The semantic index is complete: Ask matches questions by meaning as well as by keywords.</p>}
     </div>
   )

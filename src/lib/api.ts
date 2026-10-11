@@ -8,6 +8,7 @@ import type {
   GitHubStatusResponse,
   HealthResponse,
   ImportersResponse,
+  RedeemResponse,
   RepoListResponse,
   RepoSummary,
   SearchResponse,
@@ -86,6 +87,8 @@ export const api = {
   health: (signal?: AbortSignal) => request<HealthResponse>('GET', '/api/health', undefined, signal),
   session: () => request<SessionResponse>('GET', '/api/auth/session'),
   login: (code: string) => request<SessionResponse>('POST', '/api/auth/login', { code }),
+  /** Redeems a single-use invitation; the response carries the new sign-in key, once. */
+  redeem: (code: string) => request<RedeemResponse>('POST', '/api/auth/redeem', { code }),
   logout: () => request<SessionResponse>('POST', '/api/auth/logout', {}),
   listRepos: () => request<RepoListResponse>('GET', '/api/repos'),
   addRepo: (url: string, discovery: Discovery) => request<RepoSummary>('POST', '/api/repos', { url, discovery }),

@@ -12,7 +12,9 @@ import { ConfirmDialog, StatusBadge } from "../../src/components/ui.tsx";
 import { UploadPanel } from "../../src/components/upload.tsx";
 import { GitHubCallbackPage } from "../../src/pages/GitHubCallbackPage.tsx";
 import { isPartial, repoState } from "../../src/lib/format.ts";
-import { RepoCard, ReposPage } from "../../src/pages/ReposPage.tsx";
+import { Allowance, GettingStarted, RepoCard, ReposPage } from "../../src/pages/ReposPage.tsx";
+import { KeyReveal, LoginPage } from "../../src/pages/LoginPage.tsx";
+import { PrivateUnavailable } from "../../src/components/github.tsx";
 import { ArchitectureBody } from "../../src/pages/repo/ArchitecturePanel.tsx";
 import { CodeMap } from "../../src/pages/repo/FilesTab.tsx";
 import { OverviewTab } from "../../src/pages/repo/OverviewTab.tsx";
@@ -64,16 +66,60 @@ describe("status badges", () => {
   });
 });
 
+describe("signing up and signing in", () => {
+  it("explains RepoMind and how to use an invitation or a sign-in key", () => {
+    const page = text(renderToStaticMarkup(createElement(LoginPage, { configured: true, onSignedIn: () => {} })));
+    expect(page).toContain("Understand a codebase by asking it questions.");
+    expect(page).toContain("Invitation code or sign-in key");
+    expect(page).toContain("New here? Paste the invitation code you were sent (it starts with rmi_ ). RepoMind creates your own account");
+    expect(page).toContain("Coming back? Paste your sign-in key (it starts with rmk_ ).");
+    expect(page).toContain("RepoMind is invite-only");
+  });
+
+  it("shows a new sign-in key once, says what the invitation grants, and requires confirming it was saved", () => {
+    const html = renderToStaticMarkup(createElement(KeyReveal, { signInKey: "rmk_example", recovery: false, onContinue: () => {} }));
+    const page = text(html);
+    expect(page).toContain("Your account is ready");
+    expect(page).toContain("not to anyone else’s repositories, and nobody else can see yours");
+    expect(page).toContain("RepoMind keeps only a fingerprint of it, so it cannot show it to you again");
+    expect(html).toContain('value="rmk_example"');
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Continue to RepoMind<\/button>/);
+    const recovered = text(renderToStaticMarkup(createElement(KeyReveal, { signInKey: "rmk_example", recovery: true, onContinue: () => {} })));
+    expect(recovered).toContain("Your old key no longer works, and your other devices were signed out. Your repositories are unchanged.");
+  });
+});
+
 describe("first visit", () => {
-  it("explains the three sources, what indexing does and the limits before anything is added", () => {
+  it("welcomes a new, empty account with the steps, the limits and its allowance", () => {
+    const welcome = text(renderToStaticMarkup(createElement(GettingStarted, { limit: 5 })));
+    expect(welcome).toContain("Welcome to RepoMind");
+    expect(welcome).toContain("only you can see the repositories you add");
+    expect(welcome).toContain("public GitHub link");
+    expect(welcome).toContain("ZIP file");
+    expect(welcome).toContain("Each account holds up to 5 repositories and can start 20 indexing jobs and ask 100 questions a day (6 a minute).");
+    expect(welcome).toContain("0 of 5 repositories used");
+  });
+
+  it("does not show a welcome or an allowance before the list has loaded, and offers both public sources", () => {
     const page = text(renderToStaticMarkup(createElement(ReposPage)));
-    expect(page).toContain("How RepoMind works");
-    expect(page).toContain("public GitHub URL");
-    expect(page).toContain("ZIP of your project");
-    expect(page).toContain("private GitHub repository");
-    expect(page).toContain("5 repositories per account, 20 new indexing jobs a day, and 100 questions a day (6 a minute)");
+    expect(page).toContain("Loading repositories…");
+    expect(page).not.toContain("Welcome to RepoMind");
+    expect(page).not.toContain("repositories used");
     expect(page).toContain("Public GitHub repository");
     expect(page).toContain("ZIP upload");
+  });
+
+  it("shows the repository allowance in words and as a bar", () => {
+    const html = renderToStaticMarkup(createElement(Allowance, { used: 3, limit: 5 }));
+    expect(text(html)).toContain("3 of 5 repositories used");
+    expect(html).toContain('aria-valuenow="3"');
+    expect(html).toContain('aria-valuemax="5"');
+  });
+
+  it("labels private GitHub as not enabled, with the ZIP alternative", () => {
+    const card = text(renderToStaticMarkup(createElement(PrivateUnavailable)));
+    expect(card).toContain("Private GitHub repository Not enabled");
+    expect(card).toContain("download it as a ZIP");
   });
 
   it("keeps a failed destructive action's error inside the dialog", () => {
@@ -281,7 +327,7 @@ describe("overview", () => {
 
   it("shows a fully indexed repository as ready without partial warnings", () => {
     const page = overview(STATES.full);
-    expect(page).toContain("Ready. Explore the files, search, or ask a question.");
+    expect(page).toContain("Ready Read the architecture summary below, browse the files , search for a function , or ask a question .");
     expect(page).not.toContain("Partial index");
     expect(page).toMatch(/Files indexed 10 /);
   });
@@ -290,12 +336,15 @@ describe("overview", () => {
     const page = overview(STATES.semanticPaused);
     expect(page).toContain("Semantic search resumes after 00:00 UTC; keyword search works now.");
     expect(page).toContain("Semantic index (helps Ask match by meaning) 16 / 50");
-    expect(page).toContain("Search ready Files, search, symbols and the architecture overview work now.");
+    expect(page).toContain("Search ready Read the architecture summary below");
+    expect(page).toContain("is paused (see above); until it is done, answers use keyword evidence.");
   });
 
   it("does not promise a semantic index on a server without one", () => {
     const page = overview(repo("keyword-only", version({ chunksEmbedded: 0, embeddingNote: "Semantic search is not configured; keyword search is available." })));
-    expect(page).toContain("Ready. Explore the files, search, or ask a question. This server has no semantic index, so answers use keyword evidence.");
+    expect(page).toContain("or ask a question . This server has no semantic index, so answers use keyword evidence.");
+    // Said once, not twice.
+    expect(page.split("Semantic search is not configured").length).toBe(1);
     expect(page).not.toContain("Semantic index (helps Ask");
   });
 

@@ -28,13 +28,15 @@ export function PrivateRepositories({ disabled, onChanged }: { disabled: boolean
     }
   }, [])
 
-  if (!status?.configured) {
-    return error ? (
+  if (error && !status) {
+    return (
       <Notice tone="warning" title="Private GitHub repositories">
         Their status could not be loaded ({error}). Reload the page to try again.
       </Notice>
-    ) : null
+    )
   }
+  if (!status) return null
+  if (!status.configured) return <PrivateUnavailable />
 
   async function connect() {
     setError(null)
@@ -127,6 +129,21 @@ export function PrivateRepositories({ disabled, onChanged }: { disabled: boolean
           }}
         />
       )}
+    </section>
+  )
+}
+
+/** Shown while this server has no GitHub App configured: the option exists, but is not offered here. */
+export function PrivateUnavailable() {
+  return (
+    <section className="card card--unavailable stack" aria-labelledby="private-title">
+      <h2 id="private-title" className="card__title">
+        Private GitHub repository <span className="tag">Not enabled</span>
+      </h2>
+      <p className="hint">
+        Connecting a private GitHub repository is not enabled on this RepoMind server. To explore a private project, download it as a ZIP (on
+        GitHub: Code → Download ZIP) and use ZIP upload above. Nothing in the ZIP is run.
+      </p>
     </section>
   )
 }

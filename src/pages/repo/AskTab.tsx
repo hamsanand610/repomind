@@ -130,7 +130,10 @@ export function AskTab({ repo }: { repo: RepoSummary }) {
           Ask
         </button>
       </form>
-      <p className="hint">Enter to send, Shift+Enter for a new line. RepoMind reads code; it cannot change or run it.</p>
+      <p className="hint">
+        Specific questions work best: name a feature, file or function, as in “How are passwords checked?” or “What calls <code>saveUser</code>?”. Enter
+        to send, Shift+Enter for a new line. RepoMind reads code; it cannot change or run it.
+      </p>
     </div>
   )
 }

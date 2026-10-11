@@ -79,7 +79,7 @@ export function FilesTab({ repo }: { repo: RepoSummary }) {
         {selected ? (
           <FileViewer repo={repo} path={selected} lines={lines} />
         ) : (
-          <EmptyState title="Select a file">Choose a file to read it exactly as it was indexed.</EmptyState>
+          <EmptyState title="Select a file">Choose a file to read it exactly as it was indexed. Code files also show their outline (functions and classes), the files they import, and the files that import them.</EmptyState>
         )}
       </section>
     </div>
