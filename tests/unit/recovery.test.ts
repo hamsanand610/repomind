@@ -368,13 +368,19 @@ describe("repeated re-index and deletion", () => {
   it("re-indexes three times (including while embedding) and deletes, leaving nothing behind", async () => {
     const repoId = await addRepo();
     await drive();
+    // Each re-index follows a new commit; an unchanged one is refused (ADR 0006).
+    await expect(startVersion(services(), repoRow(repoId))).rejects.toThrow(/already indexed at the latest commit/);
+    const commit = (n: number) => (repos = [{ ...BIG, sha: String(n).repeat(40) }]);
     // Re-index while the previous version is still embedding.
+    commit(1);
     const reindexed = await startVersion(services(), repoRow(repoId));
     await runStep(services(), reindexed);
     await expect(startVersion(services(), repoRow(repoId))).rejects.toThrow(/already being indexed/);
     await drive();
+    commit(2);
     await startVersion(services(), repoRow(repoId));
     await drive();
+    commit(3);
     await startVersion(services(), repoRow(repoId));
     await drive();
     expect(count("SELECT COUNT(*) AS n FROM versions")).toBe(1);

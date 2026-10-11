@@ -19,8 +19,10 @@ import {
   UNDER_REPO_LIMIT,
   assertUnderRepoLimit,
   repoLimitError,
+  withoutEmptyRepoOnCapacity,
 } from "./ingest.ts";
 import { randomId } from "./platform.ts";
+import { CAPACITY_MESSAGE, IndexingCapacityError } from "./write-budget.ts";
 
 /**
  * ZIP uploads (ADR 0003). The browser reads the archive and sends a manifest
@@ -61,7 +63,7 @@ export async function createUploadRepository(deps: IngestDeps, ownerId: string, 
       .first<{ id: string }>();
     throw taken ? nameTaken(manifest.name) : repoLimitError(deps.config.maxReposPerOwner);
   }
-  await startUploadVersion(deps, await getRepoForOwner(db, ownerId, repoId), manifest);
+  await withoutEmptyRepoOnCapacity(db, repoId, async () => startUploadVersion(deps, await getRepoForOwner(db, ownerId, repoId), manifest));
   return repoId;
 }
 
@@ -167,13 +169,26 @@ export async function indexUploadBatch(deps: IngestDeps, ownerId: string, repoId
     throw new HttpError(413, "payload_too_large", `Send at most ${UPLOAD_LIMITS.maxBatchBytes / 1024} KB of files per request.`);
   }
 
-  const guard = await beginWindow(deps, version, repo, plan);
+  // A reported failure was not a CPU-limit kill: give back the crash-guard attempt.
+  const refund = () => deps.db.prepare("UPDATE versions SET step_attempts = MAX(step_attempts - 1, 0) WHERE id = ?").bind(version.id).run().catch(() => {});
+  // ADR 0006: no budget, nothing written. The upload is not paused (its next_attempt_at is
+  // its expiry), so the person can continue from the same place after 00:00 UTC.
+  const outOfCapacity = () =>
+    new HttpError(429, "indexing_capacity", `${CAPACITY_MESSAGE.split(".")[0]}. Your upload is kept: choose the same ZIP again after 00:00 UTC to continue it.`);
+  let guard: Awaited<ReturnType<typeof beginWindow>>;
+  try {
+    guard = await beginWindow(deps, version, repo, plan);
+  } catch (error) {
+    if (!(error instanceof IndexingCapacityError)) throw error;
+    await refund();
+    throw outOfCapacity();
+  }
   if (!("outcome" in guard)) {
     try {
       await indexWindow(deps, version, repo, plan, items.slice(0, guard.maxFiles));
     } catch (error) {
-      // A reported failure was not a CPU-limit kill: give back the crash-guard attempt.
-      await deps.db.prepare("UPDATE versions SET step_attempts = MAX(step_attempts - 1, 0) WHERE id = ?").bind(version.id).run().catch(() => {});
+      await refund();
+      if (error instanceof IndexingCapacityError) throw outOfCapacity();
       console.error(JSON.stringify({ event: "upload_batch_failed", errorName: error instanceof Error ? error.name : typeof error }));
       throw new HttpError(503, "unavailable", "The server could not store these files right now. The upload will continue from the same place when you retry.");
     }

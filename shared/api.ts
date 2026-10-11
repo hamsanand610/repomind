@@ -34,6 +34,7 @@ export type ApiErrorCode =
   | "use_invitation"
   | "account_disabled"
   | "account_unavailable"
+  | "indexing_capacity"
   | "internal_error";
 
 /**

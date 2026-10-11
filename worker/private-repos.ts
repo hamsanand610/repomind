@@ -1,7 +1,7 @@
 import { type GitHubAppDeps, getConnection, revokeGrant, storedAccessToken, verifyRepository } from "./github-app.ts";
 import { GitHubAccessError, GitHubError } from "./github.ts";
 import { HttpError } from "./http.ts";
-import { type IngestDeps, type RepoRow, UNDER_REPO_LIMIT, assertUnderRepoLimit, deleteRepository, getRepoForOwner, repoLimitError, startVersion } from "./ingest.ts";
+import { type IngestDeps, type RepoRow, UNDER_REPO_LIMIT, assertUnderRepoLimit, deleteRepository, getRepoForOwner, repoLimitError, startVersion, withoutEmptyRepoOnCapacity } from "./ingest.ts";
 import { randomId } from "./platform.ts";
 
 /**
@@ -141,7 +141,7 @@ export async function addPrivateRepository(deps: PrivateDeps, ownerId: string, b
     throw new HttpError(409, "conflict", "You already added this repository as a public repository. Delete that one first to index it through GitHub.");
   }
   try {
-    await startVersion(deps, await getRepoForOwner(deps.db, ownerId, repoId));
+    await withoutEmptyRepoOnCapacity(deps.db, repoId, async () => startVersion(deps, await getRepoForOwner(deps.db, ownerId, repoId)));
   } catch (error) {
     throw asHttp(error);
   }

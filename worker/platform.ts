@@ -60,6 +60,8 @@ export interface AppEnv {
   MAX_CHUNKS_PER_REPO?: string;
   MAX_REPOS_PER_OWNER?: string;
   MAX_STORED_VECTORS?: string;
+  INDEX_WRITE_BUDGET?: string;
+  ACCOUNT_INDEX_WRITE_SHARE?: string;
 }
 
 export interface Config {
@@ -71,6 +73,10 @@ export interface Config {
   maxReposPerOwner: number;
   /** Vectors this index may hold before embedding stops (Free: 5M stored dimensions per account). */
   maxStoredVectors: number;
+  /** D1 rows that background indexing, embedding and cleanup may write per UTC day, for all accounts together (ADR 0006). */
+  indexWriteBudget: number;
+  /** The part of that budget one account may claim per UTC day by starting jobs (ADR 0006). */
+  accountIndexWriteShare: number;
 }
 
 export function readConfig(env: AppEnv): Config {
@@ -91,6 +97,11 @@ export function readConfig(env: AppEnv): Config {
     // Default to 80% of that (7,812 vectors at 512 dims), leaving room for the
     // evaluation index and for counts that lag behind recent writes.
     maxStoredVectors: int(env.MAX_STORED_VECTORS, Math.floor(4_000_000 / embeddingDims), 0, 1_000_000),
+    // D1 Free allows 100,000 rows written per day for the whole Cloudflare account,
+    // and every query fails once it is used up. Indexing gets 55,000; the rest is
+    // headroom for sign-in, rate limits, Ask, administration and evaluation (ADR 0006).
+    indexWriteBudget: int(env.INDEX_WRITE_BUDGET, 55_000, 0, 1_000_000),
+    accountIndexWriteShare: int(env.ACCOUNT_INDEX_WRITE_SHARE, 20_000, 0, 1_000_000),
   };
 }
 

@@ -51,6 +51,27 @@ export async function readUsage(db: Database, scope: string, bucket: string): Pr
   return row?.count ?? 0;
 }
 
+/**
+ * Adds `amount` to a counter only if the total stays within `cap`, in one
+ * statement. SQLite runs one write at a time, so concurrent reservations can
+ * never take the counter past the cap; a refused reservation writes nothing.
+ * Returns false when refused. D1 errors are thrown, never treated as granted.
+ */
+export async function reserveUsage(db: Database, scope: string, bucket: string, amount: number, cap: number): Promise<boolean> {
+  const rows = Math.ceil(amount);
+  if (rows <= 0) return true;
+  const row = await db
+    .prepare(
+      `INSERT INTO usage_counters (scope, bucket, count) SELECT ?, ?, ? WHERE ? <= ?
+       ON CONFLICT (scope, bucket) DO UPDATE SET count = usage_counters.count + excluded.count
+       WHERE usage_counters.count + excluded.count <= ?
+       RETURNING count`,
+    )
+    .bind(scope, bucket, rows, rows, cap, cap)
+    .first<{ count: number }>();
+  return row !== null;
+}
+
 /** Counts one event and throws 429 once the window's limit is exceeded. */
 export async function enforceLimit(db: Database, scope: string, bucket: string, limit: number, message: string): Promise<void> {
   const count = await addUsage(db, scope, bucket, 1);

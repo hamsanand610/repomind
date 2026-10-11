@@ -182,23 +182,35 @@ describe("repository flow", () => {
     const first = await indexToCompletion(cookie, repo.id);
     const vectorsAfterFirst = vectors.store.size;
 
-    expect((await call(`/api/repos/${repo.id}/reindex`, { method: "POST", cookie, body: "{}" })).status).toBe(202);
-    const second = await indexToCompletion(cookie, repo.id);
-    expect(second.active?.id).not.toBe(first.active?.id);
+    // Re-indexing an unchanged commit would rebuild an identical index (ADR 0006).
+    const unchanged = await call(`/api/repos/${repo.id}/reindex`, { method: "POST", cookie, body: "{}" });
+    expect(unchanged.status).toBe(409);
+    expect(await unchanged.text()).toContain("already indexed at the latest commit");
 
-    // Background steps (the cron path) retire the old version completely.
-    const services = createServices(env, { fetch: fakeGitHubFetch([REPO]) });
-    for (let id = await nextBackgroundVersion(db, Date.now()); id; id = await nextBackgroundVersion(db, Date.now())) await runStep(services, id);
-    expect(db.sqlite.prepare("SELECT COUNT(*) AS n FROM versions").get()).toEqual({ n: 1 });
-    expect(vectors.store.size).toBe(vectorsAfterFirst);
+    // A new commit on the default branch (the shared fixture is restored afterwards).
+    const firstSha = REPO.sha;
+    REPO.sha = "e".repeat(40);
+    try {
+      expect((await call(`/api/repos/${repo.id}/reindex`, { method: "POST", cookie, body: "{}" })).status).toBe(202);
+      const second = await indexToCompletion(cookie, repo.id);
+      expect(second.active?.id).not.toBe(first.active?.id);
 
-    expect((await call(`/api/repos/${repo.id}`, { method: "DELETE", cookie })).status).toBe(200);
-    expect((await call(`/api/repos/${repo.id}`, { cookie })).status).toBe(404);
-    for (let id = await nextBackgroundVersion(db, Date.now()); id; id = await nextBackgroundVersion(db, Date.now())) await runStep(services, id);
-    for (const table of ["versions", "files", "chunks", "chunks_fts", "version_plans", "repos"]) {
-      expect(db.sqlite.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
+      // Background steps (the cron path) retire the old version completely.
+      const services = createServices(env, { fetch: fakeGitHubFetch([REPO]) });
+      for (let id = await nextBackgroundVersion(db, Date.now()); id; id = await nextBackgroundVersion(db, Date.now())) await runStep(services, id);
+      expect(db.sqlite.prepare("SELECT COUNT(*) AS n FROM versions").get()).toEqual({ n: 1 });
+      expect(vectors.store.size).toBe(vectorsAfterFirst);
+
+      expect((await call(`/api/repos/${repo.id}`, { method: "DELETE", cookie })).status).toBe(200);
+      expect((await call(`/api/repos/${repo.id}`, { cookie })).status).toBe(404);
+      for (let id = await nextBackgroundVersion(db, Date.now()); id; id = await nextBackgroundVersion(db, Date.now())) await runStep(services, id);
+      for (const table of ["versions", "files", "chunks", "chunks_fts", "version_plans", "repos"]) {
+        expect(db.sqlite.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
+      }
+      expect(vectors.store.size).toBe(0);
+    } finally {
+      REPO.sha = firstSha;
     }
-    expect(vectors.store.size).toBe(0);
   });
 
   it("indexes from a browser-supplied discovery without calling the GitHub API, and fails clearly on a forged one", async () => {

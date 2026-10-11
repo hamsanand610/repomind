@@ -34,6 +34,10 @@
 		"LLM_MODEL": "@cf/google/gemma-4-26b-a4b-it",
 		"DAILY_NEURON_BUDGET": "8500",
 		"MAX_CHUNKS_PER_REPO": "1500",
-		"MAX_REPOS_PER_OWNER": "5"
+		"MAX_REPOS_PER_OWNER": "5",
+		// The local evaluation server uses a local D1 database, which does not count
+		// toward the Cloudflare account, so the indexing write budget is not limiting.
+		"INDEX_WRITE_BUDGET": "1000000",
+		"ACCOUNT_INDEX_WRITE_SHARE": "1000000"
 	}
 }

@@ -42,6 +42,11 @@
 		"DAILY_NEURON_BUDGET": "3500",
 		"MAX_CHUNKS_PER_REPO": "1500",
 		"MAX_REPOS_PER_OWNER": "5",
-		"MAX_STORED_VECTORS": "4000"
+		"MAX_STORED_VECTORS": "4000",
+		// ADR 0006: this database shares the account-wide D1 write limit with
+		// production, so evaluation indexing gets its own, smaller daily budget.
+		// Raise it with --var only for a planned run on a quiet day.
+		"INDEX_WRITE_BUDGET": "10000",
+		"ACCOUNT_INDEX_WRITE_SHARE": "10000"
 	}
 }

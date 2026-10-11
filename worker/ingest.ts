@@ -11,6 +11,19 @@ import { GitHubAccessError, GitHubError, type GitHubClient } from "./github.ts";
 import { HttpError } from "./http.ts";
 import { type Config, type Database, type VectorizeBinding, insertRows, randomId } from "./platform.ts";
 import { msUntilUtcMidnight, neuronsRemaining, recordNeurons } from "./quota.ts";
+import {
+  CAPACITY_MESSAGE,
+  EMBED_CAPACITY_NOTE,
+  IndexingCapacityError,
+  admitIndexingJob,
+  cleanupFinalRows,
+  cleanupRows,
+  embedRows,
+  jobRows,
+  reserveIndexWrites,
+  resumeAfterMidnight,
+  windowRows,
+} from "./write-budget.ts";
 
 /**
  * Repository ingestion as small, resumable, idempotent steps. Every step
@@ -200,8 +213,23 @@ export async function createRepository(
     throw repoLimitError(deps.config.maxReposPerOwner);
   }
   const repo = await getRepoForOwner(db, ownerId, repoId);
-  await startVersion(deps, repo, { defaultBranch: info.defaultBranch, discovery });
+  await withoutEmptyRepoOnCapacity(db, repoId, () => startVersion(deps, repo, { defaultBranch: info.defaultBranch, discovery }));
   return { repoId, existing: false };
+}
+
+/**
+ * ADR 0006: a new repository refused for lack of indexing capacity is removed
+ * again, so the refusal does not take one of the owner's repository slots.
+ */
+export async function withoutEmptyRepoOnCapacity<T>(db: Database, repoId: string, start: () => Promise<T>): Promise<T> {
+  try {
+    return await start();
+  } catch (error) {
+    if (error instanceof HttpError && error.code === "indexing_capacity") {
+      await db.prepare("DELETE FROM repos WHERE id = ? AND latest_version_id IS NULL").bind(repoId).run();
+    }
+    throw error;
+  }
 }
 
 /**
@@ -269,9 +297,18 @@ export async function openVersion(
 ): Promise<string> {
   const { db } = deps;
   const { report, plan } = version;
-  const now = deps.now();
   const versionId = randomId("v");
   const rejected = report.decision === "rejected";
+  if (!rejected) {
+    const previous = await getVersion(db, repo.active_version_id);
+    await refuseUnchanged(deps, previous, version.sha, plan.length, repo.source === "zip");
+    // ADR 0006: refuse at once when today's budget, or the owner's share of it, cannot cover this job.
+    const embedding = Boolean(deps.embedder && deps.vectors);
+    const chunks = Math.min(report.admittedEstimate, deps.config.maxChunksPerRepo);
+    const replaced = previous ? { chunks: previous.chunks_total, files: previous.files_total } : undefined;
+    await admitIndexingJob(deps, repo.owner_id, jobRows(chunks, plan.length, embedding, replaced));
+  }
+  const now = deps.now();
   await db.batch([
     // Earlier failed attempts are retired, so repeated failures do not pile up.
     db
@@ -291,6 +328,34 @@ export async function openVersion(
   return versionId;
 }
 
+/** Skip reasons that another attempt at the same content could overcome. */
+const TRANSIENT_SKIPS = ["download_failed", "processing_error", "processing_limit"];
+
+/**
+ * ADR 0006: re-indexing the same commit (or uploading the same ZIP) with the
+ * same plan and chunk budget rebuilds an identical index, which costs
+ * thousands of rows for nothing. Allowed when anything that shapes the index
+ * differs, or when the indexed version skipped files for reasons a new attempt
+ * could fix.
+ */
+async function refuseUnchanged(deps: IngestDeps, previous: VersionRow | null, sha: string, planLength: number, upload: boolean): Promise<void> {
+  const { db } = deps;
+  if (!previous || previous.status !== "ready" || previous.commit_sha !== sha || previous.files_total !== planLength) return;
+  if (parseAdmission(previous)?.budget !== deps.config.maxChunksPerRepo) return;
+  const transient = await db
+    .prepare(`SELECT COUNT(*) AS n FROM files WHERE version_id = ? AND status = 'skipped' AND skip_reason IN (${TRANSIENT_SKIPS.map(() => "?").join(", ")})`)
+    .bind(previous.id, ...TRANSIENT_SKIPS)
+    .first<{ n: number }>();
+  if ((transient?.n ?? 0) > 0) return;
+  throw new HttpError(
+    409,
+    "conflict",
+    upload
+      ? "This ZIP has the same content as the version already indexed, so there is nothing new to index."
+      : `This repository is already indexed at the latest commit (${sha.slice(0, 7)}), so there is nothing new to index.`,
+  );
+}
+
 /** One unit of work for a version: index files, finalize, embed, or clean up. */
 export async function runStep(deps: IngestDeps, versionId: string): Promise<StepOutcome> {
   const version = await getVersion(deps.db, versionId);
@@ -308,6 +373,7 @@ export async function runStep(deps: IngestDeps, versionId: string): Promise<Step
       return await indexFilesStep(deps, version);
     } catch (error) {
       if (error instanceof GitHubAccessError) return failForAccess(deps, version, error);
+      if (error instanceof IndexingCapacityError) return pauseForCapacity(deps, version);
       return recordStepError(deps, version, error);
     }
   }
@@ -471,6 +537,8 @@ async function commitWindow(
     file.status === "indexed" ? file.secretsRedacted : 0,
   ]);
   const chunkRows = chunks.map((chunk) => [chunk.id, version.id, chunk.ordinal, chunk.seq, chunk.startLine, chunk.endLine, chunk.text, identifierWords(chunk.text), chunk.embeddable ? 1 : 0]);
+  // ADR 0006: nothing is written unless today's budget covers this window (and the finalize that may follow).
+  if (!(await reserveIndexWrites(deps, windowRows(records.length, chunks.length, end >= plan.length)))) throw new IndexingCapacityError();
   await db.batch([
     ...insertRows(db, "INSERT OR IGNORE INTO files (version_id, ordinal, path, language, size, status, skip_reason, line_count, chunk_count, secrets_redacted)", 10, fileRows),
     ...insertRows(db, "INSERT OR IGNORE INTO chunks (id, version_id, ordinal, seq, start_line, end_line, text, ident, embeddable)", 9, chunkRows),
@@ -580,6 +648,10 @@ async function embedStep(deps: IngestDeps, version: VersionRow, embedder: Embedd
   if ((await neuronsRemaining(db, deps.config.dailyNeuronBudget, now)) < estimate) {
     return pauseEmbedding(deps, version, msUntilUtcMidnight(now), "Today's free AI allowance is used up. Semantic search resumes after 00:00 UTC; keyword search works now.");
   }
+  // ADR 0006: reserved before the AI call, so a refusal spends neither Neurons nor rows.
+  if (!(await reserveIndexWrites(deps, embedRows(batch.length)))) {
+    return pauseEmbedding(deps, version, resumeAfterMidnight(now) - now, EMBED_CAPACITY_NOTE);
+  }
   await db.prepare("UPDATE versions SET step_cursor = ?, step_attempts = ? WHERE id = ?").bind(marker, attempts, version.id).run();
 
   let embeddings: number[][];
@@ -633,6 +705,32 @@ async function pauseEmbedding(deps: IngestDeps, version: VersionRow, waitMs: num
 }
 
 /**
+ * ADR 0006: today's write budget cannot cover the next window. Nothing was
+ * written; the job resumes after 00:00 UTC. The crash-guard attempt is given
+ * back (the step was not killed) and no error is counted towards skipping.
+ */
+async function pauseForCapacity(deps: IngestDeps, version: VersionRow): Promise<StepOutcome> {
+  const now = deps.now();
+  const until = resumeAfterMidnight(now);
+  await deps.db
+    .prepare(
+      `UPDATE versions SET next_attempt_at = ?, error_code = 'indexing_capacity', error_message = ?, step_attempts = MAX(step_attempts - 1, 0), updated_at = ?
+       WHERE id = ? AND status = 'indexing'`,
+    )
+    .bind(until, CAPACITY_MESSAGE, now, version.id)
+    .run();
+  return { kind: "waiting", untilMs: until, reason: CAPACITY_MESSAGE };
+}
+
+/** ADR 0006: cleanup of hidden data waits for tomorrow's budget. */
+async function pauseCleanupForCapacity(deps: IngestDeps, version: VersionRow): Promise<StepOutcome> {
+  const now = deps.now();
+  const until = resumeAfterMidnight(now);
+  await deps.db.prepare("UPDATE versions SET next_attempt_at = ?, updated_at = ? WHERE id = ?").bind(until, now, version.id).run();
+  return { kind: "waiting", untilMs: until, reason: CAPACITY_MESSAGE };
+}
+
+/**
  * Deletes a retired version's vectors and rows, a bounded batch at a time.
  * `keepVersion`: a failed upload keeps its version row (and error message)
  * but loses its partial chunks, vectors and file list.
@@ -644,6 +742,8 @@ async function cleanupStep(deps: IngestDeps, version: VersionRow, keepVersion = 
     .bind(version.id, CLEANUP_BATCH)
     .all<{ rowid: number; id: string }>();
   if (results.length > 0) {
+    // ADR 0006: deletes are writes too. The data is already hidden, so it can wait for tomorrow's budget.
+    if (!(await reserveIndexWrites(deps, cleanupRows(results.length)))) return pauseCleanupForCapacity(deps, version);
     // Every chunk's vector id, not only those marked embedded: a step can write
     // vectors and be killed before marking them. Deleting a missing id is a no-op.
     // Rows are deleted only after their vectors, so a failure loses no ids.
@@ -672,6 +772,7 @@ async function cleanupStep(deps: IngestDeps, version: VersionRow, keepVersion = 
     await db.batch(statements);
     return { kind: "cleaned", rows: results.length };
   }
+  if (!(await reserveIndexWrites(deps, cleanupFinalRows(version.files_total)))) return pauseCleanupForCapacity(deps, version);
   await db.batch([
     db.prepare("DELETE FROM files WHERE version_id = ?").bind(version.id),
     db.prepare("DELETE FROM version_plans WHERE version_id = ?").bind(version.id),
