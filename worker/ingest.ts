@@ -1,3 +1,4 @@
+import { SEMANTIC_OFF_NOTE } from "../shared/api.ts";
 import type { AdmissionReport } from "../shared/ingest/admission.ts";
 import { DEFAULT_ADMISSION_LIMITS, admitRepository } from "../shared/ingest/admission.ts";
 import { identifierWords } from "../shared/ingest/identifiers.ts";
@@ -215,7 +216,9 @@ export async function startVersion(
     sha = discovery.commitSha;
     tree = { files: discovery.files.map(([path, size]) => ({ path, size })), entries: discovery.treeEntries, truncated: discovery.truncated };
   } else {
-    ref = repo.requested_ref || options.defaultBranch || repo.default_branch || (await withGitHubErrors(() => github.getRepo(repo.gh_owner, repo.gh_repo))).defaultBranch;
+    // Always asked, so the server never lists a repository that is not public (even with a GITHUB_TOKEN).
+    const info = await withGitHubErrors(() => github.getRepo(repo.gh_owner, repo.gh_repo));
+    ref = repo.requested_ref || options.defaultBranch || repo.default_branch || info.defaultBranch;
     sha = await withGitHubErrors(() => github.resolveCommit(repo.gh_owner, repo.gh_repo, ref));
     tree = await withGitHubErrors(() => github.getTree(repo.gh_owner, repo.gh_repo, sha));
   }
@@ -294,7 +297,12 @@ export async function runStep(deps: IngestDeps, versionId: string): Promise<Step
 async function indexFilesStep(deps: IngestDeps, version: VersionRow): Promise<StepOutcome> {
   const { db } = deps;
   const repo = await db.prepare("SELECT * FROM repos WHERE id = ?").bind(version.repo_id).first<RepoRow>();
-  if (!repo) return { kind: "idle" };
+  if (!repo) {
+    // The repository was deleted while this version was being opened: retire it so cleanup
+    // removes it, instead of leaving an "indexing" version the cron would pick forever.
+    await db.prepare("UPDATE versions SET status = 'superseded', next_attempt_at = 0, updated_at = ? WHERE id = ? AND status = 'indexing'").bind(deps.now(), version.id).run();
+    return { kind: "idle" };
+  }
   const planRow = await db.prepare("SELECT plan FROM version_plans WHERE version_id = ?").bind(version.id).first<{ plan: string }>();
   const plan = JSON.parse(planRow?.plan ?? "[]") as PlanEntry[];
   const cursor = version.files_cursor;
@@ -462,18 +470,31 @@ async function commitWindow(
       )
       .bind(end, version.id, version.id, deps.now(), version.id),
   ]);
-  if (end >= plan.length) {
-    const refreshed = await getVersion(db, version.id);
-    if (refreshed?.status === "indexing") return finalizeVersion(deps, refreshed, repo);
+  const refreshed = await getVersion(db, version.id);
+  if (!refreshed) {
+    // The repository was deleted and cleaned up while this step downloaded its files:
+    // nothing will ever clean these rows, so remove what this window just wrote.
+    await removeWindow(db, version.id, start, end);
+    return { kind: "idle" };
   }
+  if (end >= plan.length && refreshed.status === "indexing") return finalizeVersion(deps, refreshed, repo);
   return { kind: "indexed", files: records.length, chunks: chunks.length };
+}
+
+/** Deletes one window's rows of a version that no longer exists (nothing was embedded yet). */
+async function removeWindow(db: Database, versionId: string, start: number, end: number): Promise<void> {
+  await db.batch([
+    db.prepare("DELETE FROM chunks_fts WHERE rowid IN (SELECT rowid FROM chunks WHERE version_id = ? AND ordinal >= ? AND ordinal < ?)").bind(versionId, start, end),
+    db.prepare("DELETE FROM chunks WHERE version_id = ? AND ordinal >= ? AND ordinal < ?").bind(versionId, start, end),
+    db.prepare("DELETE FROM files WHERE version_id = ? AND ordinal >= ? AND ordinal < ?").bind(versionId, start, end),
+  ]);
 }
 
 /** Makes the version searchable and retires the previous one. Embedding continues afterwards. */
 async function finalizeVersion(deps: IngestDeps, version: VersionRow, repo: RepoRow): Promise<StepOutcome> {
   const { db } = deps;
   const now = deps.now();
-  const note = deps.embedder && deps.vectors ? null : "Semantic search is not configured; keyword search is available.";
+  const note = deps.embedder && deps.vectors ? null : SEMANTIC_OFF_NOTE;
   await db.batch([
     db
       .prepare("UPDATE versions SET status = 'ready', finished_at = ?, updated_at = ?, embedding_note = ?, step_attempts = 0, next_attempt_at = 0 WHERE id = ? AND status = 'indexing'")
@@ -565,6 +586,16 @@ async function embedStep(deps: IngestDeps, version: VersionRow, embedder: Embedd
       )
       .bind(version.id, embedder.model, embedder.dims, deps.now(), now, version.id),
   ]);
+  // If cleanup removed these chunks while the AI call ran, their new vectors have no row
+  // left to find them by: delete them now so they cannot leak into the shared storage.
+  const { results: still } = await db
+    .prepare(`SELECT id FROM chunks WHERE rowid IN (${rowids.map(() => "?").join(", ")})`)
+    .bind(...rowids)
+    .all<{ id: string }>();
+  if (still.length < batch.length) {
+    const kept = new Set(still.map((row) => row.id));
+    await vectors.deleteByIds(batch.map((row) => row.id).filter((id) => !kept.has(id))).catch(() => {});
+  }
   return { kind: "embedded", chunks: batch.length };
 }
 

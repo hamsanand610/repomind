@@ -1,4 +1,4 @@
-import { type GitHubAppDeps, getConnection, markRevoked, revokeGrant, storedAccessToken, verifyRepository } from "./github-app.ts";
+import { type GitHubAppDeps, getConnection, revokeGrant, storedAccessToken, verifyRepository } from "./github-app.ts";
 import { GitHubAccessError, GitHubError } from "./github.ts";
 import { HttpError } from "./http.ts";
 import { type IngestDeps, type RepoRow, deleteRepository, getRepoForOwner, startVersion } from "./ingest.ts";
@@ -57,8 +57,11 @@ export async function checkAccess(deps: PrivateDeps, repo: RepoRow): Promise<Acc
   if (repo.source !== "github_app") return "ok";
   const app = deps.githubApp;
   const now = deps.now();
-  const connection = app ? await getConnection(deps.db, repo.owner_id) : null;
-  if (!app || !connection || connection.status !== "active") {
+  // A missing or invalid server configuration is the operator's problem, not the user's:
+  // content is withheld, but the repository is never marked lost (which would delete it).
+  if (!app) return "unknown";
+  const connection = await getConnection(deps.db, repo.owner_id);
+  if (!connection || connection.status !== "active") {
     await markLost(deps, repo);
     return "revoked";
   }
@@ -164,11 +167,18 @@ export async function disconnectGitHub(deps: PrivateDeps, ownerId: string): Prom
   const app = requireGitHubApp(deps);
   const token = await storedAccessToken(app, ownerId);
   const revokedAtGitHub = token ? await revokeGrant(app, token) : false;
-  await markRevoked(deps.db, ownerId, deps.now());
-  await deps.db.prepare("DELETE FROM github_connections WHERE owner_id = ?").bind(ownerId).run();
-  const { results } = await deps.db.prepare("SELECT id FROM repos WHERE owner_id = ? AND source = 'github_app'").bind(ownerId).all<{ id: string }>();
-  for (const { id } of results) await deleteRepository(deps, ownerId, id);
-  return { revokedAtGitHub, repositoriesDeleted: results.length };
+  const now = deps.now();
+  const count = await deps.db.prepare("SELECT COUNT(*) AS n FROM repos WHERE owner_id = ? AND source = 'github_app'").bind(ownerId).first<{ n: number }>();
+  // One bounded batch: the repositories disappear at once; their rows and vectors are then
+  // removed by the existing cleanup (cron and /step), a bounded amount per run.
+  await deps.db.batch([
+    deps.db.prepare("DELETE FROM github_connections WHERE owner_id = ?").bind(ownerId),
+    deps.db
+      .prepare("UPDATE versions SET status = 'superseded', next_attempt_at = 0, error_attempts = 0, updated_at = ? WHERE repo_id IN (SELECT id FROM repos WHERE owner_id = ? AND source = 'github_app')")
+      .bind(now, ownerId),
+    deps.db.prepare("DELETE FROM repos WHERE owner_id = ? AND source = 'github_app'").bind(ownerId),
+  ]);
+  return { revokedAtGitHub, repositoriesDeleted: count?.n ?? 0 };
 }
 
 /** Cron: deletes one repository whose access has been lost for 7 days. */

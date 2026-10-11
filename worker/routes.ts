@@ -418,6 +418,7 @@ async function activeVersion(context: RequestContext, ownerId: string): Promise<
 }
 
 async function getFiles(context: RequestContext, ownerId: string): Promise<Response> {
+  await limitReads(context, ownerId);
   const { version } = await activeVersion(context, ownerId);
   const files = await listFiles(context.services.db, version.id);
   return jsonResponse({ commitSha: version.commit_sha, files } satisfies FileListResponse, 200, context.requestId);
@@ -426,6 +427,7 @@ async function getFiles(context: RequestContext, ownerId: string): Promise<Respo
 async function getFile(context: RequestContext, ownerId: string): Promise<Response> {
   const path = context.url.searchParams.get("path") ?? "";
   if (path.length === 0 || path.length > 1024) throw new HttpError(400, "invalid_request", "A file path is required.");
+  await limitReads(context, ownerId);
   const { repo, version } = await activeVersion(context, ownerId);
   const { file, content } = await readFile(context.services.db, version.id, path);
   const code = file.status === "indexed" ? await fileCodeInfo(context.services.db, version, file.path, file.language, content) : { outline: null, imports: null, dynamicImports: [] };
@@ -453,7 +455,13 @@ async function importers(context: RequestContext, ownerId: string): Promise<Resp
   return jsonResponse(await findImporters(context.services.db, version, path), 200, context.requestId);
 }
 
+/** File lists, files and the overview read more rows as repositories grow: bounded per owner. */
+async function limitReads(context: RequestContext, ownerId: string): Promise<void> {
+  await enforceLimit(context.services.db, `read:${ownerId}`, minuteBucket(context.services.now()), 120, "Too many requests. Wait a minute and try again.");
+}
+
 async function getArchitecture(context: RequestContext, ownerId: string): Promise<Response> {
+  await limitReads(context, ownerId);
   const { version } = await activeVersion(context, ownerId);
   return jsonResponse(await architecture(context.services.db, version, parseAdmission(version)), 200, context.requestId);
 }

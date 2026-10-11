@@ -125,8 +125,14 @@ function scanLines(lines: string[], family: LanguageFamily): LineInfo[] {
  * are left out: there the "/" is a JSX closing tag or text.
  */
 function regexAllowed(line: string, i: number): boolean {
-  const before = line.slice(0, i).trimEnd();
-  return before === "" || /(?:[(,=:[!&|?{};+\-*%~^]|=>)$/.test(before) || /(?:^|[^\w$.])(?:return|typeof|case|in|of|new|delete|void|throw|yield|await|instanceof|else|do)$/.test(before);
+  // Looks back only as far as needed (constant work per "/"), so a huge single line stays linear.
+  let j = i - 1;
+  while (j >= 0 && (line[j] === " " || line[j] === "\t")) j--;
+  if (j < 0) return true;
+  if ("(,=:[!&|?{};+-*%~^".includes(line[j]) || (line[j] === ">" && line[j - 1] === "=")) return true;
+  const start = Math.max(0, j - 11);
+  const tail = line.slice(start, j + 1);
+  return (start === 0 ? /(?:^|[^\w$.])(?:return|typeof|case|in|of|new|delete|void|throw|yield|await|instanceof|else|do)$/ : /[^\w$.](?:return|typeof|case|in|of|new|delete|void|throw|yield|await|instanceof|else|do)$/).test(tail);
 }
 
 /** The index after a regular expression literal, which never spans lines. */

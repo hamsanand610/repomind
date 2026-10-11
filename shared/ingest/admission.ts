@@ -19,6 +19,8 @@ export interface AdmissionLimits {
   /** Repositories estimated above this multiple of the budget are rejected. */
   partialFactor: number;
   maxTreeEntries: number;
+  /** Supported files a repository may list (the browser's limit, MAX_DISCOVERY_FILES). */
+  maxCandidateFiles: number;
 }
 
 export const DEFAULT_ADMISSION_LIMITS: AdmissionLimits = {
@@ -29,6 +31,7 @@ export const DEFAULT_ADMISSION_LIMITS: AdmissionLimits = {
   bytesPerChunkHigh: 1_250,
   partialFactor: 4,
   maxTreeEntries: 20_000,
+  maxCandidateFiles: 2_000,
 };
 
 export type Tier = 0 | 1 | 2 | 3 | 4;
@@ -148,6 +151,13 @@ export function admitRepository(
 
   const sizes = new Map(files.map((file) => [file.path, file.size]));
   const { planned, skipped } = planRepository(files.map((file) => file.path), Number.MAX_SAFE_INTEGER);
+  // The browser refuses more than this before adding; a listing made on the server is held to the same limit.
+  if (planned.length > limits.maxCandidateFiles) {
+    return reject(
+      "too_many_files",
+      `This repository has ${planned.length.toLocaleString("en-US")} supported files; the free-tier limit is ${limits.maxCandidateFiles.toLocaleString("en-US")}. Try a smaller repository.`,
+    );
+  }
   for (const file of skipped) exclude({ path: file.path, reason: file.reason });
 
   const shareCap = Math.max(1, Math.floor(limits.maxChunksPerRepo * limits.maxFileShare));

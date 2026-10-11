@@ -405,3 +405,55 @@ describe("repeated re-index and deletion", () => {
     expect(count("SELECT COUNT(*) AS n FROM versions")).toBe(2); // the active one and the latest failure
   });
 });
+
+describe("deletion racing with work in flight (release audit)", () => {
+  it("retires a version whose repository was deleted before its first step, so the cron is never stuck", async () => {
+    const repoId = await addRepo();
+    // The repository row disappears after the version was opened (a delete that raced a re-index).
+    db.sqlite.prepare("DELETE FROM repos WHERE id = ?").run(repoId);
+    await drive();
+    expect(await nextBackgroundVersion(db, clock)).toBeNull();
+    expect(count("SELECT COUNT(*) AS n FROM versions")).toBe(0);
+    assertConsistent();
+  });
+
+  it("removes rows a step writes after the repository was deleted during its downloads", async () => {
+    const repoId = await addRepo();
+    let deleted = false;
+    rawFault = () => {
+      if (!deleted) {
+        deleted = true;
+        // Deleted (and cleaned up inline) while this step is still downloading.
+        void deleteRepository(services(), OWNER, repoId);
+      }
+      return undefined;
+    };
+    await drive();
+    expect(count("SELECT COUNT(*) AS n FROM chunks")).toBe(0);
+    expect(count("SELECT COUNT(*) AS n FROM files")).toBe(0);
+    expect(count("SELECT COUNT(*) AS n FROM versions")).toBe(0);
+    assertConsistent();
+  });
+
+  it("deletes vectors written for chunks that were cleaned up during the embedding call", async () => {
+    const repoId = await addRepo();
+    const ai = fakeAi();
+    env.AI = {
+      async run(model, inputs) {
+        const result = await ai.run(model, inputs);
+        // The repository is deleted (and its chunks cleaned) while the embedding call is in flight.
+        if (Array.isArray(inputs.documents) && repoRow(repoId)) {
+          const version = repoRow(repoId).active_version_id ?? "";
+          db.sqlite.prepare("DELETE FROM repos WHERE id = ?").run(repoId);
+          db.sqlite.prepare("DELETE FROM chunks_fts WHERE rowid IN (SELECT rowid FROM chunks WHERE version_id = ?)").run(version);
+          db.sqlite.prepare("DELETE FROM chunks WHERE version_id = ?").run(version);
+          db.sqlite.prepare("UPDATE versions SET status = 'superseded' WHERE id = ?").run(version);
+        }
+        return result;
+      },
+    };
+    await drive();
+    expect(vectors.store.size).toBe(0);
+    assertConsistent();
+  });
+});

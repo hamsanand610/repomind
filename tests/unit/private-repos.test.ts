@@ -402,13 +402,47 @@ describe("expiry, revocation, lost access and disconnect", () => {
     expect(count("SELECT COUNT(*) AS n FROM github_connections")).toBe(0);
     expect(count("SELECT COUNT(*) AS n FROM repos WHERE source = 'github_app'")).toBe(0);
     expect(count("SELECT COUNT(*) AS n FROM repos WHERE id = 'r_zip'")).toBe(1);
-    expect(count("SELECT COUNT(*) AS n FROM chunks")).toBe(0);
-    expect(vectors.store.size).toBe(0);
     expect((await call(`/api/repos/${repo.id}`, { cookie: session })).status).toBe(404);
+    // Rows and vectors go through the bounded background cleanup, not one unbounded request.
+    for (let i = 0; i < 10; i++) {
+      const id = await nextBackgroundVersion(db, clock);
+      if (!id) break;
+      await runStep(createServices(env, options()), id);
+    }
+    expect(count("SELECT COUNT(*) AS n FROM chunks")).toBe(0);
+    expect(count("SELECT COUNT(*) AS n FROM versions")).toBe(0);
+    expect(vectors.store.size).toBe(0);
+  });
+
+  it("never treats a missing server configuration as lost access (which would delete indexes)", async () => {
+    const session = await login();
+    await connect(session, ALICE);
+    const repo = await addPrivate(session, github.repos[0]);
+    env.GITHUB_APP_CLIENT_SECRET = undefined;
+    clock += ACCESS_RECHECK_MS + 1;
+    expect((await call(`/api/repos/${repo.id}/files`, { cookie: session })).status).toBe(503);
+    expect(count("SELECT access_lost_at AS n FROM repos WHERE id = ?", repo.id)).toBe(0);
+    clock += LOST_ACCESS_RETENTION_MS + 1;
+    expect(await purgeLostRepositories(createServices(env, options()))).toBeNull();
   });
 });
 
 describe("rate limits, outages, interruptions, cancellation and re-indexing", () => {
+  it("rate-limits file and architecture reads per account (release audit)", async () => {
+    const session = await login();
+    await connect(session, ALICE);
+    const repo = await addPrivate(session, github.repos[0]);
+    for (let i = 0; i < 120; i++) {
+      const path = i % 2 === 0 ? `/api/repos/${repo.id}/files` : `/api/repos/${repo.id}/architecture`;
+      expect((await call(path, { cookie: session })).status).toBe(200);
+    }
+    const limited = await call(`/api/repos/${repo.id}/file?path=${encodeURIComponent("README.md")}`, { cookie: session });
+    expect(limited.status).toBe(429);
+    expect(await limited.text()).toContain("Too many requests. Wait a minute and try again.");
+    clock += 60_000;
+    expect((await call(`/api/repos/${repo.id}/files`, { cookie: session })).status).toBe(200);
+  });
+
   it("reports a rate limit without GitHub's text, and allows reads during a short outage only", async () => {
     const session = await login();
     await connect(session, ALICE);

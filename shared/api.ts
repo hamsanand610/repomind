@@ -68,6 +68,9 @@ export interface SessionResponse {
 
 export type VersionStatus = "indexing" | "ready" | "failed" | "superseded";
 
+/** A version's embeddingNote when this server has no semantic index (keyword search only). */
+export const SEMANTIC_OFF_NOTE = "Semantic search is not configured; keyword search is available.";
+
 export interface VersionSummary {
   id: string;
   commitSha: string;

@@ -83,3 +83,13 @@ describe("admitRepository", () => {
     expect(report.excluded).toContainEqual({ path: "dist.js", reason: "too_large" });
   });
 });
+
+describe("server-side listings (release audit)", () => {
+  it("refuses more supported files than the browser allows, even when they are empty", () => {
+    const files = Array.from({ length: DEFAULT_ADMISSION_LIMITS.maxCandidateFiles + 1 }, (_, i) => ({ path: `src/f${i}.js`, size: 0 }));
+    const { report, admitted } = admitRepository(files, files.length);
+    expect(report).toMatchObject({ decision: "rejected", reason: "too_many_files" });
+    expect(admitted).toEqual([]);
+    expect(admitRepository(files.slice(1), files.length - 1).report.decision).not.toBe("rejected");
+  });
+});

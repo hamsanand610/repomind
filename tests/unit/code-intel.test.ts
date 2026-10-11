@@ -390,3 +390,14 @@ describe("readmePurpose", () => {
     expect(readmePurpose(readme)).toEqual({ title: "Cobra", text: "Cobra is a library for creating powerful modern CLI applications in Go.", startLine: 6, endLine: 7 });
   });
 });
+
+describe("crafted content stays linear (release audit)", () => {
+  it("scans a 200 KB single line full of slashes and many unclosed HTML tags quickly", () => {
+    const line = "a / b ".repeat(35_000);
+    const started = performance.now();
+    extractDefinitions(`${line}\nfunction after() {}\n`, "javascript");
+    parseImports("<script ".repeat(20_000) + "<link ".repeat(20_000), "html");
+    expect(performance.now() - started).toBeLessThan(1_500);
+    expect(extractDefinitions("const re = x => /`/.test(x);\nfunction ok() {}\n", "javascript").map((d) => d.name)).toEqual(["re", "ok"]);
+  });
+});

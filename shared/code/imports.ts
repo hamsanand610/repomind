@@ -112,8 +112,9 @@ export function parseImports(text: string, language: string, startLine = 1): { i
     });
   } else if (lang === "html") {
     // Tags may span lines: the statement starts at `<` and ends on the line holding the URL.
-    for (const m of text.matchAll(/<script\b[^>]*?\bsrc\s*=\s*(['"])([^'"]+)\1/gi)) add(m.index ?? 0, (m.index ?? 0) + m[0].lastIndexOf(m[2]), m[2], "script");
-    for (const m of text.matchAll(/<link\b[^>]*>/gi)) {
+    // Bounded tag lengths keep the scan linear even with many unclosed tags.
+    for (const m of text.matchAll(/<script\b[^>]{0,2000}?\bsrc\s*=\s*(['"])([^'"]{1,2000})\1/gi)) add(m.index ?? 0, (m.index ?? 0) + m[0].lastIndexOf(m[2]), m[2], "script");
+    for (const m of text.matchAll(/<link\b[^>]{0,2000}>/gi)) {
       const tag = m[0];
       const href = tag.match(/\bhref\s*=\s*(['"])([^'"]+)\1/i);
       if (href && (/\brel\s*=\s*['"]?stylesheet/i.test(tag) || /\.css(?:[?#]|$)/i.test(href[2]))) add(m.index ?? 0, (m.index ?? 0) + tag.indexOf(href[2]), href[2], "stylesheet");
