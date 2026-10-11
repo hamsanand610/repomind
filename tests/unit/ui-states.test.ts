@@ -8,11 +8,11 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { AdmissionReport, ArchitectureResponse, RepoSummary, SymbolsResponse, VersionSummary } from "../../shared/api.ts";
-import { StatusBadge } from "../../src/components/ui.tsx";
+import { ConfirmDialog, StatusBadge } from "../../src/components/ui.tsx";
 import { UploadPanel } from "../../src/components/upload.tsx";
 import { GitHubCallbackPage } from "../../src/pages/GitHubCallbackPage.tsx";
 import { isPartial, repoState } from "../../src/lib/format.ts";
-import { RepoCard } from "../../src/pages/ReposPage.tsx";
+import { RepoCard, ReposPage } from "../../src/pages/ReposPage.tsx";
 import { ArchitectureBody } from "../../src/pages/repo/ArchitecturePanel.tsx";
 import { CodeMap } from "../../src/pages/repo/FilesTab.tsx";
 import { OverviewTab } from "../../src/pages/repo/OverviewTab.tsx";
@@ -57,10 +57,31 @@ describe("status badges", () => {
   it("give each state a distinct label, and mark partial indexes", () => {
     expect(badge(STATES.full).trim()).toBe("Ready");
     expect(badge(STATES.partial).trim()).toBe("Ready Partial index");
-    expect(badge(STATES.semanticPaused).trim()).toBe("Ready · semantic search paused");
+    expect(badge(STATES.semanticPaused).trim()).toBe("Search ready · semantic index paused");
     expect(badge(STATES.indexingPaused).trim()).toBe("Paused");
     expect(badge(STATES.failed).trim()).toBe("Failed");
     expect(badge(STATES.reindexFailed).trim()).toBe("Ready");
+  });
+});
+
+describe("first visit", () => {
+  it("explains the three sources, what indexing does and the limits before anything is added", () => {
+    const page = text(renderToStaticMarkup(createElement(ReposPage)));
+    expect(page).toContain("How RepoMind works");
+    expect(page).toContain("public GitHub URL");
+    expect(page).toContain("ZIP of your project");
+    expect(page).toContain("private GitHub repository");
+    expect(page).toContain("5 repositories per account, 20 new indexing jobs a day, and 100 questions a day (6 a minute)");
+    expect(page).toContain("Public GitHub repository");
+    expect(page).toContain("ZIP upload");
+  });
+
+  it("keeps a failed destructive action's error inside the dialog", () => {
+    const dialog = text(renderToStaticMarkup(createElement(ConfirmDialog, {
+      title: "Disconnect GitHub?", description: "x", confirmText: "disconnect", actionLabel: "Disconnect", busy: false,
+      error: "Couldn't reach the RepoMind server. Check your connection and try again.", onConfirm: () => {}, onCancel: () => {},
+    })));
+    expect(dialog).toContain("Couldn't reach the RepoMind server.");
   });
 });
 
@@ -194,8 +215,18 @@ describe("ZIP uploads", () => {
 
   it("explains a cancelled upload while the previous index stays in use", () => {
     const page = overview(zipRepo(zipVersion({ id: "v_ok" }), zipVersion({ id: "v_cancel", status: "failed", errorCode: "upload_cancelled", errorMessage: "Upload cancelled. Its partial data was removed." })));
-    expect(page).toContain("The latest upload did not finish Upload cancelled. Its partial data was removed.");
+    expect(page).toContain("The latest upload was cancelled Upload cancelled. Its partial data was removed.");
     expect(page).toContain("Searches and answers keep using the previous index (fingerprint f1e2d3c ).");
+    expect(card(zipRepo(zipVersion({ id: "v_ok" }), zipVersion({ id: "v_cancel", status: "failed", errorCode: "upload_cancelled", errorMessage: "Upload cancelled." }))))
+      .toContain("The last upload was cancelled. Still serving the previous index.");
+  });
+
+  it("shows a cancelled first upload as cancelled, not failed, with the next step", () => {
+    const summary = zipRepo(null, zipVersion({ id: "v_cancel", status: "failed", errorCode: "upload_cancelled", errorMessage: "Upload cancelled. Its partial data was removed." }));
+    expect(badge(summary).trim()).toBe("Cancelled");
+    const page = overview(summary);
+    expect(page).toContain("The latest upload was cancelled");
+    expect(page).toContain("Upload a new version below, or delete this repository.");
   });
 });
 
@@ -213,6 +244,11 @@ describe("private GitHub repositories", () => {
     expect(card(privateRepo("ok"))).not.toContain("hidden");
     expect(card(privateRepo("lost"))).toContain("Your GitHub account can no longer read this repository, so its index is hidden. It is deleted after 7 days unless access returns.");
     expect(card(privateRepo("revoked"))).toContain("Your GitHub authorization was revoked or disconnected, so this index is hidden.");
+    expect(badge(privateRepo("revoked")).trim()).toBe("Content hidden");
+    // No "Ready" and no architecture summary for content the user can no longer read.
+    const hidden = overview(privateRepo("lost"));
+    expect(hidden).not.toContain("Ready.");
+    expect(hidden).not.toContain("Architecture");
   });
 
   it("offers cancel while indexing, and no re-index without confirmed access", () => {
@@ -253,7 +289,14 @@ describe("overview", () => {
   it("keeps a repository usable while only semantic search is paused", () => {
     const page = overview(STATES.semanticPaused);
     expect(page).toContain("Semantic search resumes after 00:00 UTC; keyword search works now.");
-    expect(page).toContain("Semantic index (for questions) 16 / 50");
+    expect(page).toContain("Semantic index (helps Ask match by meaning) 16 / 50");
+    expect(page).toContain("Search ready Files, search, symbols and the architecture overview work now.");
+  });
+
+  it("does not promise a semantic index on a server without one", () => {
+    const page = overview(repo("keyword-only", version({ chunksEmbedded: 0, embeddingNote: "Semantic search is not configured; keyword search is available." })));
+    expect(page).toContain("Ready. Explore the files, search, or ask a question. This server has no semantic index, so answers use keyword evidence.");
+    expect(page).not.toContain("Semantic index (helps Ask");
   });
 
   it("shows an indexing pause with its reason and when it resumes", () => {

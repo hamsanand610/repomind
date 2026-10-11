@@ -26,12 +26,13 @@ export function LoginPage({ configured, onSignedIn }: { configured: boolean; onS
       <section className="login__intro">
         <h1>Understand a codebase by asking it questions.</h1>
         <p className="lead">
-          RepoMind indexes a public GitHub repository and answers with citations to the exact files and lines it used. It never
-          modifies, commits to or runs your code, and it tells you when the evidence isn't there.
+          RepoMind indexes a public GitHub repository, a ZIP of your project or, where enabled, a private GitHub repository you authorize, then answers
+          questions with citations to the exact files and lines it used. It never modifies, commits to or runs your code, and it tells
+          you when the evidence isn't there.
         </p>
         <ul className="login__points">
-          <li>Answers grounded in the repository, pinned to a commit</li>
-          <li>Exact-term and identifier search across every indexed file</li>
+          <li>Answers grounded in the repository, pinned to a commit or upload</li>
+          <li>Exact-term and identifier search, definitions, imports and an architecture overview</li>
           <li>Read-only: nothing is executed, nothing is pushed</li>
         </ul>
       </section>
@@ -59,7 +60,7 @@ export function LoginPage({ configured, onSignedIn }: { configured: boolean; onS
             <button type="submit" className="button button--primary" disabled={busy || code.trim().length < 16}>
               {busy ? 'Signing in…' : 'Sign in'}
             </button>
-            <p className="hint">RepoMind is invite-only while it runs on free-tier limits.</p>
+            <p className="hint">RepoMind is invite-only while it runs on free-tier limits. Ask the person who runs it for an invite code.</p>
           </form>
         )}
       </section>

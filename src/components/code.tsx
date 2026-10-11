@@ -1,20 +1,13 @@
 import type { Basis, ResolvedImport, SourceRef } from '../../shared/api.ts'
 import { filesHref } from '../lib/links.ts'
-import { navigate } from '../lib/router.ts'
+import { linkHandler } from '../lib/router.ts'
 
 /** An in-app link to exact lines in the file viewer; every displayed relationship points at one. */
 export function SourceLink({ repoId, source, label }: { repoId: string; source: SourceRef; label?: string }) {
   const href = filesHref(repoId, source.path, [source.startLine, source.endLine])
   const lines = source.startLine === source.endLine ? `${source.startLine}` : `${source.startLine}–${source.endLine}`
   return (
-    <a
-      className="source-link"
-      href={href}
-      onClick={(event) => {
-        event.preventDefault()
-        navigate(href)
-      }}
-    >
+    <a className="source-link" href={href} onClick={linkHandler(href)}>
       <code>{label ?? source.path}</code>
       <span className="muted">:{lines}</span>
     </a>
@@ -25,14 +18,7 @@ export function SourceLink({ repoId, source, label }: { repoId: string; source: 
 export function FileLink({ repoId, path }: { repoId: string; path: string }) {
   const href = filesHref(repoId, path)
   return (
-    <a
-      className="source-link"
-      href={href}
-      onClick={(event) => {
-        event.preventDefault()
-        navigate(href)
-      }}
-    >
+    <a className="source-link" href={href} onClick={linkHandler(href)}>
       <code>{path}</code>
     </a>
   )

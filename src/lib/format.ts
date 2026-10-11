@@ -1,4 +1,4 @@
-import type { RepoSummary, VersionSummary } from '../../shared/api.ts'
+import { type RepoSummary, SEMANTIC_OFF_NOTE, type VersionSummary } from '../../shared/api.ts'
 
 export const shortSha = (sha: string) => sha.slice(0, 7)
 
@@ -24,30 +24,48 @@ export function relativeTime(epochMs: number, now = Date.now()): string {
 
 /**
  * waiting: indexing is paused (rate limit, retry backoff); nothing new is searchable yet.
+ * embedding: search, files and code navigation work now; the semantic index (used by Ask) is still building.
  * semantic_paused: searchable now; only the semantic index is paused (AI allowance, storage).
  * uploading: a ZIP upload is in progress; its files come from the browser that chose it.
+ * cancelled: the only indexing attempt was cancelled by the user.
+ * blocked: a private repository whose GitHub access is gone; its content is hidden.
  */
-export type RepoState = 'indexing' | 'embedding' | 'ready' | 'failed' | 'waiting' | 'semantic_paused' | 'uploading'
+export type RepoState = 'indexing' | 'embedding' | 'ready' | 'failed' | 'waiting' | 'semantic_paused' | 'uploading' | 'cancelled' | 'blocked'
+
+const CANCELLED = new Set(['cancelled', 'upload_cancelled'])
+
+/** True when this server has no semantic index at all, so nothing is "building". */
+export function semanticOff(version: VersionSummary | null | undefined): boolean {
+  return version?.embeddingNote === SEMANTIC_OFF_NOTE
+}
 
 /** One overall state for badges, derived only from real server counters. */
 export function repoState(repo: RepoSummary, now = Date.now()): RepoState {
+  if (repo.access === 'lost' || repo.access === 'revoked') return 'blocked'
   const latest = repo.latest
   if (latest?.status === 'indexing' && repo.source === 'zip') return 'uploading'
   if (latest?.status === 'indexing') return latest.nextAttemptAt > now ? 'waiting' : 'indexing'
-  if (latest?.status === 'failed' && !repo.active) return 'failed'
+  if (latest?.status === 'failed' && !repo.active) return CANCELLED.has(latest.errorCode ?? '') ? 'cancelled' : 'failed'
   const active = repo.active
-  if (active && active.chunksEmbedded < active.chunksEmbeddable) return active.nextAttemptAt > now ? 'semantic_paused' : 'embedding'
+  if (active && active.chunksEmbedded < active.chunksEmbeddable && !semanticOff(active)) return active.nextAttemptAt > now ? 'semantic_paused' : 'embedding'
   return active ? 'ready' : 'failed'
+}
+
+/** True when the latest attempt was cancelled rather than failing. */
+export function wasCancelled(version: VersionSummary | null | undefined): boolean {
+  return version?.status === 'failed' && CANCELLED.has(version.errorCode ?? '')
 }
 
 export const STATE_LABEL: Record<RepoState, string> = {
   indexing: 'Indexing',
-  embedding: 'Building semantic index',
+  embedding: 'Search ready · semantic index building',
   ready: 'Ready',
   failed: 'Failed',
   waiting: 'Paused',
-  semantic_paused: 'Ready · semantic search paused',
+  semantic_paused: 'Search ready · semantic index paused',
   uploading: 'Uploading',
+  cancelled: 'Cancelled',
+  blocked: 'Content hidden',
 }
 
 /** Why a private repository's content is hidden (ADR 0004). */

@@ -40,7 +40,7 @@ export async function discoverRepository(
   const enc = encodeURIComponent
   onProgress('Checking the repository on GitHub…')
   const infoResponse = await github(`/repos/${enc(owner)}/${enc(repo)}`)
-  if (infoResponse.status === 404) throw new DiscoveryError('Repository not found. It may be private; RepoMind only reads public repositories.')
+  if (infoResponse.status === 404) throw new DiscoveryError('Repository not found. It may be private: private repositories are added with Connect GitHub, where it is enabled, or as a ZIP upload.')
   if (!infoResponse.ok) throw new DiscoveryError(`GitHub responded with HTTP ${infoResponse.status}.`)
   const info = (await infoResponse.json()) as { name: string; owner: { login: string }; default_branch: string; private: boolean; visibility?: string }
   if (info.private || (info.visibility && info.visibility !== 'public')) throw new DiscoveryError('Only public repositories can be indexed.')

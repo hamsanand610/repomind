@@ -6,7 +6,7 @@ import { EmptyState, ErrorNotice, Notice, Spinner } from '../../components/ui.ts
 import { api, errorMessage } from '../../lib/api.ts'
 import { SKIP_REASON_LABEL, formatBytes } from '../../lib/format.ts'
 import { filesHref, parseLines } from '../../lib/links.ts'
-import { navigate, useLocation } from '../../lib/router.ts'
+import { linkHandler, navigate, useLocation } from '../../lib/router.ts'
 
 const fileListCache = new Map<string, FileEntry[]>()
 
@@ -45,15 +45,17 @@ export function FilesTab({ repo }: { repo: RepoSummary }) {
   const [error, setError] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
 
+  // Reload for a new index only, not for every progress update of the same one.
+  const versionId = version?.id
   useEffect(() => {
-    if (!version || fileListCache.has(version.id)) {
-      if (version) setFiles(fileListCache.get(version.id) ?? null)
+    if (!versionId || fileListCache.has(versionId)) {
+      if (versionId) setFiles(fileListCache.get(versionId) ?? null)
       return
     }
     let cancelled = false
     api.files(repo.id).then(
       (result) => {
-        fileListCache.set(version.id, result.files)
+        fileListCache.set(versionId, result.files)
         if (!cancelled) setFiles(result.files)
       },
       (err) => !cancelled && setError(errorMessage(err)),
@@ -61,7 +63,7 @@ export function FilesTab({ repo }: { repo: RepoSummary }) {
     return () => {
       cancelled = true
     }
-  }, [repo.id, version])
+  }, [repo.id, versionId])
 
   if (!version) return <EmptyState title="No completed index yet">Files appear here once the first index finishes.</EmptyState>
 
@@ -151,10 +153,7 @@ function FileItem({ file, label, selected, repoId, depth = 0 }: { file: FileEntr
     <li>
       <a
         href={href}
-        onClick={(event) => {
-          event.preventDefault()
-          navigate(href)
-        }}
+        onClick={linkHandler(href)}
         className={`tree__file${file.path === selected ? ' tree__file--active' : ''}${file.status === 'skipped' ? ' tree__file--skipped' : ''}`}
         style={{ paddingInlineStart: `${depth * 0.875 + 1.5}rem` }}
         aria-current={file.path === selected ? 'page' : undefined}
@@ -274,7 +273,9 @@ function FileViewer({ repo, path, lines }: { repo: RepoSummary; path: string; li
       {error && <ErrorNotice error={error} />}
       {!data && !error && <Spinner label="Loading file…" />}
       {data && data.file.status === 'skipped' && (
-        <Notice tone="info">Not indexed: {SKIP_REASON_LABEL[data.file.skipReason ?? ''] ?? data.file.skipReason}. Open it on GitHub instead.</Notice>
+        <Notice tone="info">
+          Not indexed: {SKIP_REASON_LABEL[data.file.skipReason ?? ''] ?? data.file.skipReason}.{data.githubUrl ? ' Open it on GitHub instead.' : ''}
+        </Notice>
       )}
       {data && data.file.status === 'indexed' && (
         <>

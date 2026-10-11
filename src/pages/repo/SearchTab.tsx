@@ -3,7 +3,7 @@ import type { RepoSummary, SearchResponse, SymbolReference, SymbolsResponse } fr
 import { KindTag, SourceLink } from '../../components/code.tsx'
 import { EmptyState, ErrorNotice, Notice, Spinner } from '../../components/ui.tsx'
 import { api, errorMessage } from '../../lib/api.ts'
-import { navigate, useLocation } from '../../lib/router.ts'
+import { linkHandler, navigate, useLocation } from '../../lib/router.ts'
 import { filesHref, splitHighlights } from '../../lib/links.ts'
 
 /** A single identifier, optionally qualified (Command.Execute looks up Execute). */
@@ -17,7 +17,10 @@ export function SymbolResults({ repo, data }: { repo: RepoSummary; data: Symbols
   return (
     <section className="stack" aria-labelledby="symbol-results">
       <h2 id="symbol-results" className="section-title">
-        {data.definitions.length === 0 ? `No definition of ${data.name} found` : `${data.definitions.length} definition${data.definitions.length === 1 ? '' : 's'} of ${data.name}`}
+        {data.definitions.length === 0 ? 'No definition of ' : `${data.definitions.length} definition${data.definitions.length === 1 ? '' : 's'} of `}
+        {/* Identifiers keep their case: the heading style is uppercase. */}
+        <code className="section-title__code">{data.name}</code>
+        {data.definitions.length === 0 ? ' found' : ''}
       </h2>
       {data.definitions.length === 0 && (
         <p className="muted">
@@ -95,10 +98,12 @@ export function SearchTab({ repo }: { repo: RepoSummary }) {
 
   const [symbols, setSymbols] = useState<SymbolsResponse | null>(null)
   const identifier = IDENTIFIER.test(q)
+  // The search re-runs for a new index, not for every progress update of the same one.
+  const activeId = repo.active?.id
 
   useEffect(() => {
     setInput(q)
-    if (!q || !repo.active) return
+    if (!q || !activeId) return
     let cancelled = false
     setLoading(true)
     setError(null)
@@ -114,7 +119,7 @@ export function SearchTab({ repo }: { repo: RepoSummary }) {
     return () => {
       cancelled = true
     }
-  }, [q, repo.id, repo.active])
+  }, [q, repo.id, activeId])
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -153,7 +158,7 @@ export function SearchTab({ repo }: { repo: RepoSummary }) {
                   const href = filesHref(repo.id, match.path)
                   return (
                     <li key={match.path}>
-                      <a className="chip" href={href} onClick={(event) => { event.preventDefault(); navigate(href) }}>
+                      <a className="chip" href={href} onClick={linkHandler(href)}>
                         {match.path}
                       </a>
                     </li>
@@ -172,7 +177,7 @@ export function SearchTab({ repo }: { repo: RepoSummary }) {
                 const href = filesHref(repo.id, hit.path, [hit.startLine, hit.endLine])
                 return (
                   <li key={`${hit.path}:${hit.startLine}`} className="hit card">
-                    <a className="hit__path" href={href} onClick={(event) => { event.preventDefault(); navigate(href) }}>
+                    <a className="hit__path" href={href} onClick={linkHandler(href)}>
                       <code>{hit.path}</code> <span className="muted">lines {hit.startLine}–{hit.endLine}</span>
                     </a>
                     <Snippet text={hit.snippet} />

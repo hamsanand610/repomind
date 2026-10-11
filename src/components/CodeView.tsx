@@ -6,10 +6,11 @@ export function CodeView({ content, highlight, startAt = 1 }: { content: string;
   const ref = useRef<HTMLDivElement>(null)
   const [from, to] = highlight ?? [0, -1]
 
+  // Scroll when the range changes, not on every re-render (the array is new each time).
   useEffect(() => {
-    if (!highlight) return
+    if (to < from) return
     ref.current?.querySelector('[data-highlight="true"]')?.scrollIntoView({ block: 'center' })
-  }, [highlight])
+  }, [from, to])
 
   if (lines.length === 0) return <p className="code__empty">This file is empty.</p>
   const width = String(startAt + lines.length - 1).length

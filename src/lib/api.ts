@@ -116,5 +116,7 @@ export const api = {
 }
 
 export function errorMessage(error: unknown): string {
-  return error instanceof ApiError || error instanceof Error ? error.message : 'Something unexpected happened. Try again.'
+  // Server errors ask the user to quote the request ID, so show it.
+  if (error instanceof ApiError) return error.status >= 500 && error.requestId ? `${error.message} (reference ${error.requestId})` : error.message
+  return error instanceof Error ? error.message : 'Something unexpected happened. Try again.'
 }

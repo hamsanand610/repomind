@@ -4,7 +4,7 @@ import { ConfirmDialog, Notice, Progress, Spinner } from '../../components/ui.ts
 import { ZipPicker } from '../../components/upload.tsx'
 import { api, errorMessage } from '../../lib/api.ts'
 import { discoverRepository } from '../../lib/discovery.ts'
-import { SKIP_REASON_LABEL, filesIndexed, formatBytes, relativeTime, repoState, repoTitle, shortSha } from '../../lib/format.ts'
+import { SKIP_REASON_LABEL, filesIndexed, formatBytes, relativeTime, repoState, repoTitle, semanticOff, shortSha, wasCancelled } from '../../lib/format.ts'
 import { keepArchive, usePrepareArchive } from '../../lib/upload.ts'
 import { navigate } from '../../lib/router.ts'
 import { ArchitecturePanel } from './ArchitecturePanel.tsx'
@@ -24,23 +24,52 @@ export function OverviewTab({ repo, onChange }: { repo: RepoSummary; onChange: (
         {indexing && latest && repo.source !== 'zip' && <IndexingProgress version={latest} />}
         {indexing && repo.source === 'zip' && <p className="muted">A ZIP upload is in progress; see above.</p>}
         {latest?.status === 'failed' && (
-          <Notice tone="danger" title={repo.source === 'zip' ? 'The latest upload did not finish' : 'The latest indexing attempt failed'}>
+          <Notice
+            tone={wasCancelled(latest) ? 'info' : 'danger'}
+            title={
+              wasCancelled(latest)
+                ? `The latest ${repo.source === 'zip' ? 'upload' : 'indexing run'} was cancelled`
+                : repo.source === 'zip'
+                  ? 'The latest upload did not finish'
+                  : 'The latest indexing attempt failed'
+            }
+          >
             <p>{latest.errorMessage ?? 'Indexing could not be completed.'}</p>
-            {active && (
+            {active ? (
               <p>
                 Searches and answers keep using the previous index ({repo.source === 'zip' ? 'fingerprint' : 'commit'} <code>{shortSha(active.commitSha)}</code>).
               </p>
+            ) : (
+              <p>{repo.source === 'zip' ? 'Upload a new version below, or delete this repository.' : 'Re-index below to try again, or delete this repository.'}</p>
             )}
           </Notice>
         )}
         {active ? <ActiveIndex version={active} uploaded={repo.source === 'zip'} /> : !indexing && latest?.status !== 'failed' && <p className="muted">No completed index yet.</p>}
-        {state === 'ready' && <Notice tone="success">Ready. Explore the files, search, or ask a question.</Notice>}
+        {(state === 'ready' || state === 'embedding' || state === 'semantic_paused') && <ReadyNotice state={state} off={semanticOff(active)} />}
       </section>
 
-      {active?.status === 'ready' && <ArchitecturePanel repo={repo} />}
+      {active?.status === 'ready' && state !== 'blocked' && <ArchitecturePanel repo={repo} />}
       {(latest?.admission ?? active?.admission) && <AdmissionCard version={(indexing ? latest : (active ?? latest)) as VersionSummary} />}
       <Actions repo={repo} onChange={onChange} />
     </div>
+  )
+}
+
+/** What works now: search and navigation as soon as files are indexed; Ask improves once the semantic index is done. */
+function ReadyNotice({ state, off }: { state: 'ready' | 'embedding' | 'semantic_paused'; off: boolean }) {
+  if (state === 'ready') {
+    return (
+      <Notice tone="success">
+        Ready. Explore the files, search, or ask a question.
+        {off && ' This server has no semantic index, so answers use keyword evidence.'}
+      </Notice>
+    )
+  }
+  return (
+    <Notice tone="success" title="Search ready">
+      Files, search, symbols and the architecture overview work now. The semantic index, which helps Ask match questions by meaning, is{' '}
+      {state === 'embedding' ? 'still building' : 'paused (see above)'}; until it is done, answers use keyword evidence.
+    </Notice>
   )
 }
 
@@ -118,9 +147,9 @@ function ActiveIndex({ version, uploaded }: { version: VersionSummary; uploaded:
           )}
         </Notice>
       )}
-      {!semanticDone && <Progress label="Semantic index (for questions)" value={version.chunksEmbedded} total={version.chunksEmbeddable} />}
+      {!semanticDone && !semanticOff(version) && <Progress label="Semantic index (helps Ask match by meaning)" value={version.chunksEmbedded} total={version.chunksEmbeddable} />}
       {version.embeddingNote && <Notice tone="warning">{version.embeddingNote}</Notice>}
-      {semanticDone && version.chunksEmbeddable > 0 && <p className="muted">Keyword and semantic search are both available.</p>}
+      {semanticDone && version.chunksEmbeddable > 0 && <p className="muted">The semantic index is complete: Ask matches questions by meaning as well as by keywords.</p>}
     </div>
   )
 }
@@ -306,7 +335,7 @@ function Actions({ repo, onChange }: { repo: RepoSummary; onChange: (repo: RepoS
         )}
         <div>
           <button type="button" className="button button--danger-outline" onClick={() => setConfirming(true)} disabled={deleting}>
-            Delete index
+            Delete repository
           </button>
           <p className="hint">
             {uploaded
@@ -319,7 +348,7 @@ function Actions({ repo, onChange }: { repo: RepoSummary; onChange: (repo: RepoS
       {(error ?? readError) && <Notice tone="danger">{error ?? readError}</Notice>}
       {confirming && (
         <ConfirmDialog
-          title="Delete this index?"
+          title="Delete this repository?"
           description={
             <p>
               This permanently removes RepoMind's stored files, chunks and vectors for {name}.{' '}
@@ -327,7 +356,7 @@ function Actions({ repo, onChange }: { repo: RepoSummary; onChange: (repo: RepoS
             </p>
           }
           confirmText={name}
-          actionLabel="Delete index"
+          actionLabel="Delete repository"
           busy={deleting}
           onConfirm={remove}
           onCancel={() => setConfirming(false)}

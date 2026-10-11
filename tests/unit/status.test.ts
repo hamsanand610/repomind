@@ -34,8 +34,23 @@ describe("repoState", () => {
 
   it("labels every state distinctly", () => {
     expect(new Set(Object.values(STATE_LABEL)).size).toBe(Object.keys(STATE_LABEL).length);
-    expect(STATE_LABEL.semantic_paused).toMatch(/^Ready/); // searchable, unlike an indexing pause
+    expect(STATE_LABEL.semantic_paused).toMatch(/^Search ready/); // searchable, unlike an indexing pause
+    expect(STATE_LABEL.embedding).toMatch(/^Search ready/);
     expect(STATE_LABEL.waiting).toBe("Paused");
+  });
+
+  it("tells a cancellation from a failure, and hides content without confirmed access", () => {
+    expect(repoState(repo(null, version({ status: "failed", errorCode: "cancelled" })), NOW)).toBe("cancelled");
+    expect(repoState(repo(null, version({ status: "failed", errorCode: "upload_cancelled" })), NOW)).toBe("cancelled");
+    expect(repoState(repo(null, version({ status: "failed", errorCode: "download_failed" })), NOW)).toBe("failed");
+    expect(repoState({ ...repo(version()), source: "github_app", access: "revoked" }, NOW)).toBe("blocked");
+    expect(repoState({ ...repo(version()), source: "github_app", access: "lost" }, NOW)).toBe("blocked");
+    expect(repoState({ ...repo(version()), source: "github_app", access: "unknown" }, NOW)).toBe("ready");
+  });
+
+  it("never shows a semantic index as building forever on a server without one", () => {
+    const off = version({ chunksEmbedded: 0, embeddingNote: "Semantic search is not configured; keyword search is available." });
+    expect(repoState(repo(off), NOW)).toBe("ready");
   });
 });
 

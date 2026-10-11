@@ -17,21 +17,29 @@ export function ArchitecturePanel({ repo }: { repo: RepoSummary }) {
   const version = repo.active
   const [data, setData] = useState<ArchitectureResponse | null>(version ? (cache.get(version.id) ?? null) : null)
   const [error, setError] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
+  // Load once per index (not per progress update); a cached result is shown immediately.
+  const versionId = version?.id
 
   useEffect(() => {
-    if (!version || cache.has(version.id)) return
+    if (!versionId) return
+    const cached = cache.get(versionId)
     let cancelled = false
-    api.architecture(repo.id).then(
-      (result) => {
-        cache.set(version.id, result)
-        if (!cancelled) setData(result)
-      },
-      (err) => !cancelled && setError(errorMessage(err)),
-    )
+    if (cached) {
+      Promise.resolve().then(() => !cancelled && setData(cached))
+    } else {
+      api.architecture(repo.id).then(
+        (result) => {
+          cache.set(versionId, result)
+          if (!cancelled) setData(result)
+        },
+        (err) => !cancelled && setError(errorMessage(err)),
+      )
+    }
     return () => {
       cancelled = true
     }
-  }, [repo.id, version])
+  }, [repo.id, versionId, attempt])
 
   if (!version) return null
   return (
@@ -39,7 +47,15 @@ export function ArchitecturePanel({ repo }: { repo: RepoSummary }) {
       <h2 id="architecture-title" className="card__title">
         Architecture
       </h2>
-      {error && <ErrorNotice error={error} />}
+      {error && (
+        <ErrorNotice
+          error={error}
+          onRetry={() => {
+            setError(null)
+            setAttempt((value) => value + 1)
+          }}
+        />
+      )}
       {!data && !error && <Spinner label="Reading the repository's structure…" />}
       {data && <ArchitectureBody repoId={repo.id} data={data} />}
     </section>

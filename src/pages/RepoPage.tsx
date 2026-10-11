@@ -27,6 +27,8 @@ function useRepository(id: string) {
   const [repo, setRepo] = useState<RepoSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [missing, setMissing] = useState(false)
+  // Bumped by "Try again" so a step loop that gave up starts again.
+  const [round, setRound] = useState(0)
 
   const load = useCallback(async () => {
     try {
@@ -77,7 +79,7 @@ function useRepository(id: string) {
     return () => {
       cancelled = true
     }
-  }, [id, working])
+  }, [id, working, round])
 
   // While paused (rate limit or daily AI allowance), re-check occasionally.
   useEffect(() => {
@@ -86,7 +88,12 @@ function useRepository(id: string) {
     return () => clearInterval(timer)
   }, [waitingUntil, load])
 
-  return { repo, setRepo, error, missing, reload: load }
+  const retry = useCallback(() => {
+    setRound((value) => value + 1)
+    void load()
+  }, [load])
+
+  return { repo, setRepo, error, missing, reload: retry }
 }
 
 export function RepoPage({ id, tab }: { id: string; tab: Tab }) {
@@ -157,7 +164,8 @@ export function RepoPage({ id, tab }: { id: string; tab: Tab }) {
           {ACCESS_MESSAGE[repo.access]}
         </Notice>
       )}
-      {repo.source === 'zip' && <UploadPanel repo={repo} onChange={setRepo} />}
+      {/* One panel per upload version: a new version or a cancel starts from a clean state. */}
+      {repo.source === 'zip' && <UploadPanel key={repo.latest?.id ?? 'none'} repo={repo} onChange={setRepo} />}
       {tab === 'overview' && <OverviewTab repo={repo} onChange={setRepo} />}
       {tab === 'files' && <FilesTab repo={repo} />}
       {tab === 'search' && <SearchTab repo={repo} />}

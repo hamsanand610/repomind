@@ -35,22 +35,19 @@ export function UploadPanel({ repo, onChange }: { repo: RepoSummary; onChange: (
   const [archive, setArchive] = useState<PreparedArchive | null>(() => pendingArchive(repo.id))
   const [progress, setProgress] = useState<UploadProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [running, setRunning] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const controller = useRef<AbortController | null>(null)
-  // One upload loop at a time, also under React's double-invoked effects.
-  const active = useRef(false)
   const { prepare, progress: reading, error: readError } = usePrepareArchive()
   const uploading = version?.status === 'indexing'
+  // The effect below runs an upload exactly when these hold.
+  const running = Boolean(archive && !error && uploading)
 
-  useEffect(() => () => controller.current?.abort(), [])
-
+  // Each run owns its abort: leaving the page (or React's development double-run) stops it
+  // cleanly, and the next run continues from the server's cursor (batches are idempotent).
   useEffect(() => {
-    if (!archive || error || !uploading || active.current) return
-    active.current = true
+    if (!archive || error || !uploading) return
     const abort = new AbortController()
     controller.current = abort
-    setRunning(true)
     void uploadArchive(repo.id, archive, setProgress, abort.signal)
       .then((updated) => {
         forgetArchive(repo.id)
@@ -60,10 +57,7 @@ export function UploadPanel({ repo, onChange }: { repo: RepoSummary; onChange: (
       .catch((err: unknown) => {
         if (!abort.signal.aborted) setError(errorMessage(err))
       })
-      .finally(() => {
-        active.current = false
-        setRunning(false)
-      })
+    return () => abort.abort()
   }, [archive, error, uploading, repo.id, onChange])
 
   if (!version || !uploading) return null

@@ -79,6 +79,7 @@ export function ConfirmDialog({
   confirmText,
   actionLabel,
   busy,
+  error = null,
   onConfirm,
   onCancel,
 }: {
@@ -87,6 +88,8 @@ export function ConfirmDialog({
   confirmText: string
   actionLabel: string
   busy: boolean
+  /** Shown inside the dialog: the page behind a modal dialog cannot be read. */
+  error?: string | null
   onConfirm: () => void
   onCancel: () => void
 }) {
@@ -95,7 +98,13 @@ export function ConfirmDialog({
   const inputId = useId()
   useEffect(() => {
     const dialog = ref.current
+    // Keyboard focus returns to the control that opened the dialog when it closes.
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     if (dialog && !dialog.open) dialog.showModal()
+    return () => {
+      if (dialog?.open) dialog.close()
+      if (opener?.isConnected) opener.focus()
+    }
   }, [])
   return (
     <dialog ref={ref} className="dialog" onCancel={(event) => { event.preventDefault(); if (!busy) onCancel() }}>
@@ -112,6 +121,7 @@ export function ConfirmDialog({
           Type <code>{confirmText}</code> to confirm
         </label>
         <input id={inputId} className="input" value={typed} onChange={(event) => setTyped(event.target.value)} autoComplete="off" autoFocus />
+        {error && <Notice tone="danger">{error}</Notice>}
         <div className="dialog__actions">
           <button type="button" className="button button--secondary" onClick={onCancel} disabled={busy}>
             Cancel

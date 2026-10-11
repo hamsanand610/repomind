@@ -9,11 +9,13 @@ import { ConfirmDialog, Notice, Spinner } from './ui.tsx'
  * server is configured. RepoMind asks GitHub only for read-only access to
  * repository contents; the list shows what both the user and the app can read.
  */
-export function PrivateRepositories({ disabled }: { disabled: boolean }) {
+export function PrivateRepositories({ disabled, onChanged }: { disabled: boolean; onChanged?: () => void }) {
   const [status, setStatus] = useState<GitHubStatusResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [confirming, setConfirming] = useState(false)
+  const [dialogError, setDialogError] = useState<string | null>(null)
+  const [done, setDone] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -26,7 +28,13 @@ export function PrivateRepositories({ disabled }: { disabled: boolean }) {
     }
   }, [])
 
-  if (!status?.configured) return error ? <Notice tone="danger">{error}</Notice> : null
+  if (!status?.configured) {
+    return error ? (
+      <Notice tone="warning" title="Private GitHub repositories">
+        Their status could not be loaded ({error}). Reload the page to try again.
+      </Notice>
+    ) : null
+  }
 
   async function connect() {
     setError(null)
@@ -42,12 +50,22 @@ export function PrivateRepositories({ disabled }: { disabled: boolean }) {
 
   async function disconnect() {
     setBusy('Disconnecting…')
+    setDialogError(null)
     try {
-      await api.githubDisconnect()
+      const result = await api.githubDisconnect()
       setConfirming(false)
-      window.location.reload()
+      setDone(
+        `${result.repositoriesDeleted === 1 ? '1 private repository was' : `${result.repositoriesDeleted} private repositories were`} removed; their stored data is deleted in the background. ` +
+          (result.revokedAtGitHub
+            ? 'GitHub confirmed that RepoMind’s authorization was revoked.'
+            : 'GitHub did not confirm the revocation: you can revoke it under GitHub → Settings → Applications → Authorized GitHub Apps.') +
+          ' The app stays installed on your repositories until you uninstall it on GitHub.',
+      )
+      setStatus(await api.githubStatus())
+      onChanged?.()
     } catch (err) {
-      setError(errorMessage(err))
+      setDialogError(errorMessage(err))
+    } finally {
       setBusy(null)
     }
   }
@@ -88,6 +106,7 @@ export function PrivateRepositories({ disabled }: { disabled: boolean }) {
       )}
       {busy && <Spinner label={busy} />}
       {error && <Notice tone="danger">{error}</Notice>}
+      {done && <Notice tone="success" title="GitHub disconnected">{done}</Notice>}
       {confirming && (
         <ConfirmDialog
           title="Disconnect GitHub?"
@@ -100,8 +119,12 @@ export function PrivateRepositories({ disabled }: { disabled: boolean }) {
           confirmText="disconnect"
           actionLabel="Disconnect and delete"
           busy={busy !== null}
+          error={dialogError}
           onConfirm={disconnect}
-          onCancel={() => setConfirming(false)}
+          onCancel={() => {
+            setConfirming(false)
+            setDialogError(null)
+          }}
         />
       )}
     </section>
@@ -132,10 +155,11 @@ function RepositoryPicker({ disabled, installUrl }: { disabled: boolean; install
     setRound((value) => value + 1)
   }, [])
 
-  const shown = useMemo(() => {
+  const matching = useMemo(() => {
     const needle = filter.trim().toLowerCase()
-    return (list?.repositories ?? []).filter((repo) => repo.fullName.toLowerCase().includes(needle)).slice(0, 50)
+    return (list?.repositories ?? []).filter((repo) => repo.fullName.toLowerCase().includes(needle))
   }, [list, filter])
+  const shown = matching.slice(0, 50)
 
   async function add(id: number, fullName: string) {
     setAdding(id)
@@ -181,6 +205,8 @@ function RepositoryPicker({ disabled, installUrl }: { disabled: boolean; install
               </li>
             ))}
           </ul>
+          {matching.length === 0 && <p className="muted">No repository matches “{filter.trim()}”.</p>}
+          {matching.length > shown.length && <p className="hint">Showing 50 of {matching.length.toLocaleString()} matches. Type more of the name to narrow the list.</p>}
           {list.truncated && <p className="hint">Only the first 300 repositories are listed. Use the filter, or install RepoMind on fewer repositories.</p>}
         </>
       )}
@@ -189,8 +215,8 @@ function RepositoryPicker({ disabled, installUrl }: { disabled: boolean; install
           <a href={installUrl} target="_blank" rel="noopener noreferrer">
             Install RepoMind on more repositories ↗
           </a>
-        )}{' '}
-        ·{' '}
+        )}
+        {installUrl && ' · '}
         <button type="button" className="button button--ghost button--small" onClick={load}>
           Refresh list
         </button>

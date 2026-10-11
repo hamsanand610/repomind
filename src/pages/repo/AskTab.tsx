@@ -4,8 +4,8 @@ import { CodeView } from '../../components/CodeView.tsx'
 import { RichText } from '../../components/RichText.tsx'
 import { EmptyState, Notice, Spinner } from '../../components/ui.tsx'
 import { api, errorMessage } from '../../lib/api.ts'
-import { shortSha } from '../../lib/format.ts'
-import { navigate } from '../../lib/router.ts'
+import { repoState, repoTitle, semanticOff, shortSha } from '../../lib/format.ts'
+import { linkHandler } from '../../lib/router.ts'
 import { filesHref } from '../../lib/links.ts'
 
 interface Turn {
@@ -70,14 +70,19 @@ export function AskTab({ repo }: { repo: RepoSummary }) {
 
   return (
     <div className="ask">
-      {version.chunksEmbedded < version.chunksEmbeddable && (
-        <Notice tone="info">The semantic index is still being built ({version.chunksEmbedded.toLocaleString()} of {version.chunksEmbeddable.toLocaleString()}). Answers use keyword retrieval until it finishes.</Notice>
+      {version.chunksEmbedded < version.chunksEmbeddable && !semanticOff(version) && (
+        <Notice tone="info">
+          {repoState(repo) === 'semantic_paused'
+            ? `The semantic index is paused (${version.chunksEmbedded.toLocaleString()} of ${version.chunksEmbeddable.toLocaleString()}); ${version.embeddingNote ?? 'it resumes automatically'}`
+            : `The semantic index is still being built (${version.chunksEmbedded.toLocaleString()} of ${version.chunksEmbeddable.toLocaleString()}).`}{' '}
+          Answers use keyword retrieval until it finishes.
+        </Notice>
       )}
       {turns.length === 0 && (
         <div className="ask__intro card stack">
           <p>
-            Ask about <strong>{repo.owner}/{repo.name}</strong> at commit <code>{shortSha(version.commitSha)}</code>. Every answer cites the exact files and
-            lines it used, or says the evidence isn't there.
+            Ask about <strong>{repoTitle(repo)}</strong> {repo.source === 'zip' ? 'from the uploaded ZIP' : 'at commit'} <code>{repo.source === 'zip' ? version.ref : shortSha(version.commitSha)}</code>.
+            Every answer cites the exact files and lines it used, or says the evidence isn't there.
           </p>
           <div className="chips">
             {SUGGESTIONS.map((suggestion) => (
@@ -114,7 +119,8 @@ export function AskTab({ repo }: { repo: RepoSummary }) {
           value={question}
           onChange={(event) => setQuestion(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
+            // Not while an input method is composing (e.g. Japanese or Chinese input).
+            if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault()
               void ask(question)
             }
@@ -172,7 +178,7 @@ function CitationItem({ repo, citation, focused }: { repo: RepoSummary; citation
     <li className={focused ? 'citation citation--focused' : 'citation'} data-citation={citation.number}>
       <div className="citation__header">
         <span className="cite cite--static">{citation.number}</span>
-        <a href={href} onClick={(event) => { event.preventDefault(); navigate(href) }} className="citation__path">
+        <a href={href} onClick={linkHandler(href)} className="citation__path">
           <code>{citation.path}</code> <span className="muted">lines {citation.startLine}–{citation.endLine}</span>
         </a>
         {citation.url && (

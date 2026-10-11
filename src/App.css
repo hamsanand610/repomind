@@ -141,6 +141,7 @@
   letter-spacing: 0.02em;
   text-transform: uppercase;
 }
+.section-title__code { text-transform: none; letter-spacing: 0; }
 
 .muted {
   color: var(--color-text-subtle);
@@ -233,7 +234,9 @@
 .badge--embedding { background: var(--color-accent-subtle); color: var(--color-accent-strong); }
 .badge--waiting,
 .badge--semantic_paused { background: var(--color-warning-bg); color: var(--color-warning-text); }
-.badge--failed { background: var(--color-danger-bg); color: var(--color-danger-text); }
+.badge--failed,
+.badge--blocked { background: var(--color-danger-bg); color: var(--color-danger-text); }
+.badge--cancelled { background: var(--color-surface-muted); color: var(--color-text-muted); }
 .badge--partial { background: var(--color-warning-bg); color: var(--color-warning-text); }
 .badge--partial::before { border-radius: 0; }
 
@@ -606,9 +609,13 @@
 /* ---------- Files ---------- */
 .files {
   display: grid;
+  /* minmax(0, …): a plain 1fr track grows to the longest code line and widens the page on phones. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
   min-width: 0;
 }
+
+.files__viewer { min-width: 0; }
 
 .files__tree {
   max-height: 70vh;
@@ -1193,3 +1200,13 @@
   border-radius: var(--radius-md);
 }
 .choice-list__name { min-width: 0; overflow-wrap: anywhere; }
+
+/* ---------- Getting started ---------- */
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding-left: var(--space-5);
+}
+.steps li { line-height: 1.55; }
