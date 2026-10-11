@@ -68,7 +68,7 @@ Today RepoMind reads only public repositories. The browser lists files with no c
 7. **Expiry, revocation and cleanup:**
    - **Refresh.** An access token within 5 minutes of expiry is refreshed with the refresh token. The new pair is stored with a compare-and-swap on the generation counter. A refresh that fails because another request already rotated the pair uses the stored new pair.
    - **Revocation.** A definitive refresh failure, or a 401 after refreshing, marks the connection revoked and deletes both tokens. All of the owner's `github_app` repositories are marked access-lost and blocked, and indexing in progress fails with `github_access_revoked`.
-   - **Disconnect (user action).** RepoMind revokes the grant at GitHub (best effort), deletes the tokens and the connection, and deletes every `github_app` repository of that owner, including chunks and vectors, through the existing cleanup.
+   - **Disconnect (user action).** RepoMind revokes the grant at GitHub (best effort). Then one D1 batch deletes the tokens and the connection, retires the versions of every `github_app` repository of that owner and deletes those repositories, so they disappear at once. Their files, chunks and vectors are removed by the existing cleanup (`/step` and the cron trigger) within minutes. Doing the cleanup inline could exceed the 50-queries-per-invocation limit for an owner with several private repositories.
    - **Automatic deletion.** A repository whose access stays lost for 7 days is deleted by the cron trigger. If access returns before then, the block lifts.
    - **Deleting a repository** uses the existing cleanup. It does not touch the GitHub authorization.
 8. **Isolation:**
@@ -111,6 +111,8 @@ Until all four values are set, `/api/github/status` reports `configured: false` 
   - Migration `0005_github_app.sql`.
   - UI: `src/components/github.tsx` and `src/pages/GitHubCallbackPage.tsx`.
 - **What counts as revocation.** Only `bad_refresh_token` and `invalid_grant` from a refresh. A wrong client secret (`incorrect_client_credentials`) is treated as an outage, so an operator mistake cannot delete users' connections. A regression test covers this.
+- **A missing app configuration** (secrets removed after repositories were added) makes the access check answer "unknown", never "lost": reads answer 503 and nothing starts the 7-day deletion. A regression test covers this.
+- **Public repositories never use the server's token for privacy decisions.** Adding a public repository always asks GitHub whether it is public, even when `GITHUB_TOKEN` is set, so that token cannot be used to index a private repository it happens to reach.
 - **Concurrent refreshes.** When two requests refresh at once, the loser waits briefly for the winner's stored pair. Revocation is itself a compare-and-swap on the generation counter. A regression test reproduces the race.
 - **Cleanup through the step endpoint.** A version that fails because access was lost, or that is cancelled, is purged through the existing cleanup (`/step` and the cron trigger).
 - **Summaries without access.** For a repository whose access is lost or revoked, the summary keeps the name and state so the owner can recognise and delete it. The admission report and skip lists (which contain file paths) are withheld.

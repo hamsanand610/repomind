@@ -72,7 +72,7 @@ These numbers come from the isolated evaluation deployment running the productio
 | Chunks per repository | 1,500 | Above that, the repository is indexed partially, in priority order |
 | Rejected outright | above 4× the chunk limit | — |
 | File size | 400 KB | Larger files are skipped |
-| Supported files per repository | 2,000 | Checked in the browser before adding |
+| Supported files per repository | 2,000 | Checked in the browser before adding, and again by the server's admission check for every source |
 | Repositories per account | 5 | Uploads count too |
 | ZIP archive | 50 MB, 20,000 entries, 512 MB declared expanded size | Checked in the browser; the archive never reaches the Worker ([ADR 0003](adr/0003-zip-uploads.md)) |
 | One upload request | 8 files or 256 KB (one file up to 400 KB); JSON body up to 640 KB | Rejected with 413; the same size as one GitHub indexing step |
@@ -80,6 +80,7 @@ These numbers come from the isolated evaluation deployment running the productio
 | Private repositories listed for choosing | 300 (from up to 3 GitHub App installations) | The list says when it is truncated |
 | Private access re-check | at most every 10 minutes per repository, for content | One GitHub API call; reads are refused if access cannot be confirmed for an hour |
 | Lost access | 7 days | Then the repository is deleted by the cron trigger |
+| Requests per account | Ask 6 a minute and 100 a day; search, symbols and importers 60 a minute; file lists, files and architecture 120 a minute; 20 indexing starts a day | 429 with a fixed message; the full table is in the [README](../README.md#free-plan-limits-and-quota-behaviour) |
 
 **Why private repositories fit the Free plan ([ADR 0004](adr/0004-private-github-repositories.md)):**
 - **No new Cloudflare resources.** One D1 table (`github_connections`), three columns on `repos`, WebCrypto, and the existing cron trigger.
@@ -107,6 +108,11 @@ These numbers come from the isolated evaluation deployment running the productio
   - evaluation database 55,689, of which about 22,000 came from the code-intelligence passes, including deletion.
 - **D1 rows read:** about 880,000 of 5 million.
 - **Vectorize:** 1,633 vectors at 512 dimensions, about 17% of the 5M stored dimensions.
+
+**Release audit on 2026-10-11 (06:56 UTC, `wrangler d1 info`, rolling 24 hours):**
+- **Workers AI:** production 0 Neurons today (1,686 on 2026-10-10); the release audit spent none.
+- **D1 rows written:** production 24,030 and the evaluation database 60,422; the rolling window includes the evaluations of the previous evening, so the split by day is not known. The audit's isolated Cloudflare run indexed one small repository and one ZIP, then deleted them.
+- **Vectorize:** unchanged by the audit (`DAILY_NEURON_BUDGET=0`, so nothing was embedded).
 
 ## Unknowns that block design decisions
 

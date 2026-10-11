@@ -477,3 +477,67 @@ Health, the new routes' session requirement and the SPA callback route were chec
 
 - **GitHub is simulated locally.** The fake follows GitHub's documented behaviour (checked 2026-10-11), but a real connection has not been tested. The owner's first connection is the first real-GitHub test.
 - **No webhook.** Revocation is detected at the next token use or access check (within 10 minutes for reads), not instantly.
+
+# Release readiness audit (2026-10-11)
+
+**Scope:** the whole user journey (sign-in, the three sources, indexing and recovery, files and architecture, search and symbols, Ask, re-index, cancel, disconnect, delete), a security review of every private endpoint and background job, and the UI states. Baseline: commit `ffdddb3`.
+
+**Where it ran:** no production repository was re-indexed and no AI quota was spent.
+1. **Unit tests** (Node, real SQLite schema with FTS5, fakes for GitHub, the GitHub App, Workers AI and Vectorize).
+2. **Integration tests** in workerd against the production build (routing and session requirements).
+3. **A local UI pass** in a browser against a local Worker with generated test data, including a 375 px phone width.
+4. **The isolated Cloudflare deployment** (`repomind-eval`, its own D1 and Vectorize, `DAILY_NEURON_BUDGET=0`, placeholder GitHub App settings), deleted afterwards.
+
+**What this does not prove:** most cases run against fakes written for this project. The Cloudflare run covers public GitHub, ZIP and the private-repository plumbing up to GitHub's rejection of a placeholder app. **No real GitHub App authorization or private repository was tested.**
+
+## Regression matrix
+
+| Area | Cases | Evidence | Result |
+|---|---|---|---|
+| Public GitHub | create, index, partial, refused, re-index, delete | `flow`, `recovery`, `ingest/admission`, `ui-states`; Cloudflare run | pass |
+| ZIP | create, upload, partial, cancel, new version, delete, interrupted upload resumes, abandoned upload expires | `upload-flow`, `ui-states`; Cloudflare run | pass |
+| ZIP defences | traversal, absolute, duplicate and colliding paths; symlinks; size, entry and expansion limits; ratio; CRC and header mismatch; forged listings; bytes that do not match the listing; request size | `zip`, `upload-flow` | pass |
+| File limits | over 2,000 supported files refused in the browser **and now on the server** (also when the files are empty) | `ingest/admission`, `zip` | pass (fixed) |
+| Private GitHub | connect (state, PKCE, cookie, replay), add with id check, index, refresh races, expiry, revocation, lost access, 7-day purge, disconnect, isolation between users | `private-repos`, `secrets`; Cloudflare run with placeholder app | pass locally; **not tested against real GitHub** |
+| Failure and retry | step killed before commit, GitHub 5xx and rate limits, Vectorize write failures, AI quota | `recovery` | pass |
+| Cancel | GitHub indexing and ZIP upload; partial data removed; UI says Cancelled | `private-repos`, `upload-flow`, `ui-states`, `status` | pass |
+| Deletion races | delete during a download batch, during embedding, with an indexing version left behind | `recovery` ("deletion racing with work in flight") | pass (fixed) |
+| Search and symbols | keyword ranking, identifiers, definitions and usages, missing names | `search-rank`, `retrieval`, `code-intel`, `code-intel-flow`; `npm run eval:code` | pass; eval 100% on every measure, held-out 88/88 and 43/43 |
+| Architecture, imports, file viewer, line links | statements linked to lines, importers, unsupported languages, line ranges | `code-intel`, `ui-states`, `links`; local UI pass | pass |
+| Ask and citations | cited answers, absent evidence abstains, false premises, retry on uncited answers, active version only | `flow`, `ask-context`, `retrieval` | pass (AI faked; real-model results are in the sections above) |
+| Prompt injection | instructions inside repository files and uploads treated as data | `ask-context`, `upload-flow` | pass |
+| Auth | bad codes, tampered cookies, revoked invite codes, cross-origin posts, 401 on every repository endpoint | `flow`, `api`, `integration/routing` | pass |
+| Isolation | another account's repository answers 404; chunks of other repositories never used | `flow`, `ask-context`, `private-repos`, `upload-flow` | pass |
+| Quota and rate limits | AI allowance used up keeps search working; the shared per-account limiter; the new **read** limit end to end (120 allowed, then 429, then allowed a minute later) | `quota`, `flow`, `upload-flow`, `private-repos` | pass (read limit added) |
+| Crafted content | definitions and HTML imports stay linear on hostile input | `code-intel` ("crafted content stays linear": 3.95 s before, well under 1.5 s after) | pass (fixed) |
+| UI states | loading, empty, partial, Paused, Search ready (building or paused), Ready, Failed, Cancelled, Content hidden, quota limit, error inside dialogs | `ui-states`, `status`; local UI pass | pass |
+
+**Totals on the final code:** 470 unit tests and 11 integration tests pass; type-check and production build pass; lint shows the 7 warnings that predate this audit.
+
+## Isolated Cloudflare run
+
+`eval/github-remote.ts` on the final code: **11/11 checks passed.** Public GitHub (`expressjs/cors`) and a ZIP upload indexed and searched, and the private-repository plumbing behaved as before. After `--delete`, the eval database held 0 repositories, versions, files, chunks and connections. Every sampled invocation finished `ok` with 0 exceptions; `/step` CPU p50 20 ms, max 33 ms. Workers AI: 0 Neurons.
+
+D1 work per background step, measured locally on a 71-file repository: the release fixes add one query per indexing and embedding step. The heaviest step uses 7 calls and 17 statements, against the limit of 50 queries per invocation.
+
+## Defects found and fixed
+
+| Severity | Defect | Fix |
+|---|---|---|
+| Medium | Deleting a repository while its indexing version waited left that version without a repository; the cron trigger kept picking it, blocking background work behind it | The version is retired |
+| Medium | A delete that raced a download batch or an embedding call left orphan rows or vectors | Rows written after the delete are removed; vectors whose chunks are gone are deleted |
+| Low | Disconnect cleaned every private repository inline, which could exceed 50 D1 queries | One batch removes the connection and repositories; cleanup runs in the background |
+| Low | File list, file and architecture reads had no rate limit | 120 a minute per account |
+| Low | The server did not cap the number of supported files (only the browser did) | 2,000 on the server too |
+| Low | Two extraction scans were quadratic on crafted lines | Linear and bounded |
+| Low | With `GITHUB_TOKEN` set, a public add could index a private repository the token reached | Adds always check that the repository is public |
+| Low | A missing GitHub App configuration was treated as lost access, starting the 7-day deletion | Treated as unknown |
+| UI | The file viewer overflowed the page at phone width | The code scrolls inside its box |
+| UI | On a server without a semantic index, the badge said the semantic index was building forever | Shown as Ready, with keyword evidence explained |
+| UI | A cancelled job was shown as Failed | Cancelled, with the next step |
+| UI | The sign-in page described only public repositories; the first screen gave no starting guidance | Three sources, steps and limits explained |
+| UI | Errors from Disconnect and destructive dialogs were hidden behind the modal | Shown inside the dialog; server errors carry their reference |
+| UI | Ctrl/Cmd-click on in-app links did not open a new tab | Standard link behaviour |
+| UI | Public adds that admission would refuse used a repository slot and a daily start | Refused in the browser with the server's message first |
+
+No cross-tenant access, credential exposure or code execution path was found. One process note: during the audit, a review agent attempted to read the git-ignored `.dev.vars` file, against its instructions. The permission system blocked the read, and nothing from that file was seen or used.

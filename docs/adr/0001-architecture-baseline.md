@@ -78,6 +78,13 @@ It may suggest improvements, but it must state that it cannot apply them.
 - **Content endpoints.** Every one requires access confirmed with GitHub within the last 10 minutes.
 - **Revocation and lost access.** Both block reads at once. Disconnect revokes the grant and deletes the private indexes. Access lost for 7 days deletes the repository.
 
+**Release audit (2026-10-11).** No cross-tenant access was found. The confirmed issues below are fixed, each with a regression test that fails on the old code:
+- **Deletion racing with work in flight** (`tests/unit/recovery.test.ts`). A version whose repository was deleted is retired instead of blocking the cron trigger. Rows written by a download batch that finished after a delete are removed. Vectors written for chunks that were deleted during the embedding call are deleted.
+- **Server-side file cap** (`tests/unit/ingest/admission.test.ts`). Every source is refused above 2,000 supported files, as the browser already did; empty files no longer slip past the chunk estimate.
+- **Rate-limited reads.** File lists, files and the architecture summary allow 120 requests a minute per account.
+- **Linear extraction on crafted content** (`tests/unit/code-intel.test.ts`). The regular-expression context scan in definitions and the HTML import patterns are bounded.
+- **Private GitHub** (`tests/unit/private-repos.test.ts`). Disconnect stays within the D1 query limit; a missing app configuration is never treated as lost access; public adds never trust the server token for privacy.
+
 **Planned:**
 - M2: authentication and ownership checks on every stateful or quota-consuming endpoint; repository-relative path normalisation; ingestion size and count caps; secret redaction in indexed content.
 - M4: prompt-injection handling.
