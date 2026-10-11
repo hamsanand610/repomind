@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RepoSummary } from '../../shared/api.ts'
-import { ErrorNotice, Spinner, StatusBadge } from '../components/ui.tsx'
+import { ErrorNotice, Notice, Spinner, StatusBadge } from '../components/ui.tsx'
 import { UploadPanel } from '../components/upload.tsx'
 import { ApiError, api, errorMessage } from '../lib/api.ts'
-import { isPartial, isPaused, needsWork, repoState, shortSha } from '../lib/format.ts'
+import { ACCESS_MESSAGE, isPartial, isPaused, needsWork, repoState, shortSha } from '../lib/format.ts'
 import { linkHandler } from '../lib/router.ts'
 import { AskTab } from './repo/AskTab.tsx'
 import { FilesTab } from './repo/FilesTab.tsx'
@@ -152,6 +152,11 @@ export function RepoPage({ id, tab }: { id: string; tab: Tab }) {
         </nav>
       </header>
       {error && <ErrorNotice error={error} onRetry={reload} />}
+      {repo.access && repo.access !== 'ok' && (
+        <Notice tone={repo.access === 'unknown' ? 'warning' : 'danger'} title="Content hidden">
+          {ACCESS_MESSAGE[repo.access]}
+        </Notice>
+      )}
       {repo.source === 'zip' && <UploadPanel repo={repo} onChange={setRepo} />}
       {tab === 'overview' && <OverviewTab repo={repo} onChange={setRepo} />}
       {tab === 'files' && <FilesTab repo={repo} />}

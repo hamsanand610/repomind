@@ -6,6 +6,8 @@ import { ApiError, api, errorMessage } from '../lib/api.ts'
 import { ZipPicker } from '../components/upload.tsx'
 import { discoverRepository } from '../lib/discovery.ts'
 import { UPLOAD_HINT, keepArchive, usePrepareArchive } from '../lib/upload.ts'
+import { PrivateRepositories } from '../components/github.tsx'
+import { ACCESS_MESSAGE } from '../lib/format.ts'
 import { isPartial, relativeTime, repoState, shortSha } from '../lib/format.ts'
 import { linkHandler, navigate } from '../lib/router.ts'
 
@@ -37,6 +39,7 @@ export function ReposPage() {
       </header>
       <AddRepository disabled={repos !== null && repos.length >= limit} limit={limit} />
       <UploadRepository disabled={repos !== null && repos.length >= limit} />
+      <PrivateRepositories disabled={repos !== null && repos.length >= limit} />
       <section aria-labelledby="repos-title" className="stack">
         <h2 id="repos-title" className="section-title">
           Your repositories {repos && <span className="muted">({repos.length} of {limit})</span>}
@@ -70,12 +73,13 @@ export function RepoCard({ repo }: { repo: RepoSummary }) {
             </>
           ) : (
             <>
-              {repo.owner}/<strong>{repo.name}</strong>
+              {repo.owner}/<strong>{repo.name}</strong> {repo.source === 'github_app' && <span className="tag" title="Read with your GitHub authorization">GitHub access</span>}
             </>
           )}
         </span>
         <StatusBadge state={state} partial={isPartial(repo)} />
       </a>
+      {repo.access && repo.access !== 'ok' && <p className="repo-card__error">{ACCESS_MESSAGE[repo.access]}</p>}
       <p className="repo-card__meta">
         {version ? (
           <>

@@ -224,9 +224,23 @@ function Actions({ repo, onChange }: { repo: RepoSummary; onChange: (repo: RepoS
   async function reindex() {
     setError(null)
     try {
-      const discovery = await discoverRepository(repo.owner, repo.name, repo.ref, setProgress)
+      // Private repositories are listed by the server with your GitHub authorization.
+      const discovery = repo.source === 'github_app' ? undefined : await discoverRepository(repo.owner, repo.name, repo.ref, setProgress)
       setProgress('Starting a new index…')
       onChange(await api.reindex(repo.id, discovery))
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setProgress(null)
+    }
+  }
+
+  async function cancel() {
+    if (!repo.latest) return
+    setError(null)
+    setProgress('Cancelling…')
+    try {
+      onChange(await api.cancelIndexing(repo.id, repo.latest.id))
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -275,9 +289,16 @@ function Actions({ repo, onChange }: { repo: RepoSummary; onChange: (repo: RepoS
               Indexes a newer ZIP of this project. The current index stays usable until the new one is ready.
             </p>
           </div>
+        ) : indexing && repo.latest ? (
+          <div>
+            <button type="button" className="button button--secondary" onClick={cancel} disabled={progress !== null}>
+              Cancel indexing
+            </button>
+            <p className="hint">Stops this indexing job and removes its partial data. The current index, if any, stays usable.</p>
+          </div>
         ) : (
           <div>
-            <button type="button" className="button button--secondary" onClick={reindex} disabled={indexing || progress !== null}>
+            <button type="button" className="button button--secondary" onClick={reindex} disabled={progress !== null || (repo.access != null && repo.access !== 'ok')}>
               Re-index latest commit
             </button>
             <p className="hint">Pins the newest commit and builds a fresh index. The current one stays usable until the new one is ready.</p>

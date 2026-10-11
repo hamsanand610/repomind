@@ -50,6 +50,13 @@ export const STATE_LABEL: Record<RepoState, string> = {
   uploading: 'Uploading',
 }
 
+/** Why a private repository's content is hidden (ADR 0004). */
+export const ACCESS_MESSAGE: Record<'lost' | 'revoked' | 'unknown', string> = {
+  lost: 'Your GitHub account can no longer read this repository, so its index is hidden. It is deleted after 7 days unless access returns.',
+  revoked: 'Your GitHub authorization was revoked or disconnected, so this index is hidden. Connect GitHub again, or delete it.',
+  unknown: 'GitHub could not confirm your access right now. Try again shortly.',
+}
+
 /** "owner/name" for GitHub repositories, the name alone for uploads. */
 export function repoTitle(repo: RepoSummary): string {
   return repo.source === 'zip' ? repo.name : `${repo.owner}/${repo.name}`

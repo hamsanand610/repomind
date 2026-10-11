@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { SESSION_EXPIRED_EVENT, api, errorMessage } from './lib/api.ts'
 import { linkHandler, match, navigate, useLocation } from './lib/router.ts'
 import { ErrorNotice } from './components/ui.tsx'
+import { GitHubCallbackPage } from './pages/GitHubCallbackPage.tsx'
 import { LoginPage } from './pages/LoginPage.tsx'
 import { RepoPage, type Tab } from './pages/RepoPage.tsx'
 import { ReposPage } from './pages/ReposPage.tsx'
@@ -79,7 +80,10 @@ function App() {
 }
 
 function Routes() {
-  const { pathname } = useLocation()
+  const { pathname, search } = useLocation()
+  if (pathname === '/github/callback') {
+    return <GitHubCallbackPage code={search.get('code')} state={search.get('state')} denied={search.get('error') !== null} />
+  }
   const tabs: Array<[string, Tab]> = [
     ['/repos/:id', 'overview'],
     ['/repos/:id/files', 'files'],

@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import type { AdmissionReport, ArchitectureResponse, RepoSummary, SymbolsResponse, VersionSummary } from "../../shared/api.ts";
 import { StatusBadge } from "../../src/components/ui.tsx";
 import { UploadPanel } from "../../src/components/upload.tsx";
+import { GitHubCallbackPage } from "../../src/pages/GitHubCallbackPage.tsx";
 import { isPartial, repoState } from "../../src/lib/format.ts";
 import { RepoCard } from "../../src/pages/ReposPage.tsx";
 import { ArchitectureBody } from "../../src/pages/repo/ArchitecturePanel.tsx";
@@ -195,6 +196,40 @@ describe("ZIP uploads", () => {
     const page = overview(zipRepo(zipVersion({ id: "v_ok" }), zipVersion({ id: "v_cancel", status: "failed", errorCode: "upload_cancelled", errorMessage: "Upload cancelled. Its partial data was removed." })));
     expect(page).toContain("The latest upload did not finish Upload cancelled. Its partial data was removed.");
     expect(page).toContain("Searches and answers keep using the previous index (fingerprint f1e2d3c ).");
+  });
+});
+
+describe("private GitHub repositories", () => {
+  const privateRepo = (access: RepoSummary["access"], latest?: VersionSummary): RepoSummary => ({
+    ...repo("secret-shop", version({}), latest ?? version({})),
+    source: "github_app",
+    owner: "acme",
+    githubUrl: "https://github.com/acme/secret-shop",
+    access,
+  });
+
+  it("marks repositories read through GitHub, and says when their content is hidden", () => {
+    expect(card(privateRepo("ok"))).toContain("acme/ secret-shop GitHub access");
+    expect(card(privateRepo("ok"))).not.toContain("hidden");
+    expect(card(privateRepo("lost"))).toContain("Your GitHub account can no longer read this repository, so its index is hidden. It is deleted after 7 days unless access returns.");
+    expect(card(privateRepo("revoked"))).toContain("Your GitHub authorization was revoked or disconnected, so this index is hidden.");
+  });
+
+  it("offers cancel while indexing, and no re-index without confirmed access", () => {
+    const indexing = overview(privateRepo("ok", version({ id: "v2", status: "indexing", filesProcessed: 2 })));
+    expect(indexing).toContain("Cancel indexing");
+    expect(indexing).not.toContain("Re-index latest commit");
+    const lost = renderToStaticMarkup(createElement(OverviewTab, { repo: privateRepo("lost"), onChange: () => {} }));
+    expect(lost).toMatch(/<button[^>]*disabled=""[^>]*>Re-index latest commit<\/button>/);
+  });
+
+  it("explains a cancelled or missing authorization on the callback page", () => {
+    const denied = text(renderToStaticMarkup(createElement(GitHubCallbackPage, { code: null, state: null, denied: true })));
+    expect(denied).toContain("GitHub authorization was cancelled. Nothing was connected.");
+    const missing = text(renderToStaticMarkup(createElement(GitHubCallbackPage, { code: null, state: null, denied: false })));
+    expect(missing).toContain("Start from Connect GitHub");
+    const pending = text(renderToStaticMarkup(createElement(GitHubCallbackPage, { code: "abc", state: "xyz", denied: false })));
+    expect(pending).toContain("Confirming the authorization with GitHub");
   });
 });
 
