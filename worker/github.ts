@@ -23,11 +23,28 @@ export class GitHubError extends Error {
   }
 }
 
+/**
+ * A private repository's authorization failed: no connection, a revoked or
+ * expired GitHub authorization, or the repository is no longer reachable
+ * with the owner's token. Never carries GitHub's own error text.
+ */
+export class GitHubAccessError extends Error {
+  readonly reason: "not_connected" | "revoked" | "lost";
+  constructor(reason: GitHubAccessError["reason"]) {
+    super(reason === "lost" ? "This repository is no longer accessible with your GitHub authorization." : "Your GitHub authorization is missing or was revoked.");
+    this.name = "GitHubAccessError";
+    this.reason = reason;
+  }
+}
+
 export interface RepoInfo {
+  /** GitHub's immutable repository id. */
+  id: number;
   owner: string;
   repo: string;
   defaultBranch: string;
   sizeKb: number;
+  private: boolean;
 }
 
 export interface TreeFile {
@@ -47,7 +64,13 @@ type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 const SHA = /^[0-9a-f]{40}$/;
 
-export function createGitHubClient(fetchImpl: Fetch, token?: string): GitHubClient {
+/**
+ * `authorized`: requests carry a user's GitHub App token (added by the fetch
+ * passed in, for api.github.com only). Private repositories are then allowed,
+ * and file contents come from the contents API instead of the raw host.
+ */
+export function createGitHubClient(fetchImpl: Fetch, token?: string, options: { authorized?: boolean } = {}): GitHubClient {
+  const authorized = options.authorized === true;
   const apiHeaders: Record<string, string> = {
     Accept: "application/vnd.github+json",
     "User-Agent": USER_AGENT,
@@ -77,18 +100,21 @@ export function createGitHubClient(fetchImpl: Fetch, token?: string): GitHubClie
       const response = await api(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
       // GitHub answers 404 for private repositories too, by design.
       if (response.status === 404) throw new GitHubError("not_found", "Repository not found, or it is private.");
+      // With the user's token, a 403 that is not a rate limit (organisation SSO or IP allow list) means no access now.
+      if (authorized && response.status === 403) throw new GitHubAccessError("lost");
       if (!response.ok) throw new GitHubError("unavailable", `GitHub responded with HTTP ${response.status}.`);
       const data = (await readJson(response)) as Record<string, unknown>;
-      if (data.private === true || (typeof data.visibility === "string" && data.visibility !== "public")) {
-        throw new GitHubError("private", "Only public repositories can be indexed.");
-      }
+      const isPrivate = data.private === true || (typeof data.visibility === "string" && data.visibility !== "public");
+      if (isPrivate && !authorized) throw new GitHubError("private", "Only public repositories can be indexed.");
       if (data.disabled === true) throw new GitHubError("not_found", "This repository is disabled on GitHub.");
       const fullName = typeof data.full_name === "string" ? data.full_name.split("/") : [owner, repo];
       return {
+        id: typeof data.id === "number" ? data.id : 0,
         owner: fullName[0] ?? owner,
         repo: fullName[1] ?? repo,
         defaultBranch: typeof data.default_branch === "string" ? data.default_branch : "main",
         sizeKb: typeof data.size === "number" ? data.size : 0,
+        private: isPrivate,
       };
     },
 
@@ -124,6 +150,16 @@ export function createGitHubClient(fetchImpl: Fetch, token?: string): GitHubClie
     async getFile(owner, repo, commitSha, path, maxBytes) {
       if (!SHA.test(commitSha)) throw new GitHubError("invalid_response", "Invalid commit SHA.");
       const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+      if (authorized) {
+        // Private content through the API with the user's token, pinned to the commit.
+        const response = await api(
+          `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodedPath}?ref=${commitSha}`,
+          "application/vnd.github.raw+json",
+        );
+        if (response.status === 404) return null;
+        if (!response.ok) throw new GitHubError("unavailable", `File download failed with HTTP ${response.status}.`);
+        return readCapped(response, maxBytes);
+      }
       // No Authorization header: raw content of public repositories needs none,
       // and the token must never be sent to another host.
       const response = await fetchImpl(`${RAW}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${commitSha}/${encodedPath}`, {
@@ -139,8 +175,10 @@ export function createGitHubClient(fetchImpl: Fetch, token?: string): GitHubClie
 }
 
 function checkRateLimit(response: Response): void {
+  // Primary limits (remaining 0) and secondary limits (403 with Retry-After).
   const limited =
-    response.status === 429 || (response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0");
+    response.status === 429 ||
+    (response.status === 403 && (response.headers.get("x-ratelimit-remaining") === "0" || response.headers.get("retry-after") !== null));
   if (!limited) return;
   const retryAfter = Number(response.headers.get("retry-after"));
   const reset = Number(response.headers.get("x-ratelimit-reset"));

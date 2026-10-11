@@ -1,6 +1,7 @@
 import { handleRequest } from "./app.ts";
 import { nextBackgroundVersion, runStep } from "./ingest.ts";
 import type { AppEnv } from "./platform.ts";
+import { purgeLostRepositories } from "./private-repos.ts";
 import { pruneUsage } from "./quota.ts";
 import { createServices } from "./services.ts";
 
@@ -16,6 +17,8 @@ export default {
     try {
       const versionId = await nextBackgroundVersion(services.db, services.now());
       if (versionId) await runStep(services, versionId);
+      // Private repositories whose GitHub access stayed lost for 7 days are deleted (ADR 0004).
+      await purgeLostRepositories(services);
       // Once an hour, drop rate-limit and ledger counters older than two days.
       if (new Date(services.now()).getUTCMinutes() === 0) await pruneUsage(services.db, services.now());
     } catch (error) {

@@ -93,6 +93,17 @@ describe("API routes always reach the Worker", () => {
     expect(JSON.parse(response.body).canonicalUrl).toBe("https://github.com/owner/repo");
   });
 
+  it("routes the GitHub App and cancel endpoints to the Worker, which requires a session", async () => {
+    for (const [method, path] of [
+      ["GET", "/api/github/status"], ["POST", "/api/github/connect"], ["POST", "/api/github/complete"], ["GET", "/api/github/repositories"],
+      ["POST", "/api/github/repositories"], ["POST", "/api/github/disconnect"], ["POST", "/api/repos/r_x/cancel"],
+    ]) {
+      const response = await send(path, { method, headers: method === "POST" ? { "Content-Type": "application/json", "Content-Length": "0" } : {} });
+      expect(`${method} ${path} ${response.status}`).toBe(`${method} ${path} 401`);
+      expect(response.headers["content-type"]).toContain("application/json");
+    }
+  });
+
   it("routes the ZIP upload endpoints to the Worker, which requires a session", async () => {
     for (const [method, path] of [["POST", "/api/uploads"], ["GET", "/api/repos/r_x/upload"], ["POST", "/api/repos/r_x/upload/files"], ["POST", "/api/repos/r_x/upload/cancel"]]) {
       // Empty bodies: the local preview proxy (not the Worker) fails the request that follows
@@ -116,6 +127,10 @@ describe("the SPA still owns non-API navigation", () => {
     const response = await send("/repos/example/chat", { headers: NAVIGATION });
     expect(response.status).toBe(200);
     expect(response.body).toContain('<div id="root"></div>');
+    // GitHub's redirect after authorization lands on the SPA, never on the Worker.
+    const callback = await send("/github/callback?code=abc&state=xyz", { headers: NAVIGATION });
+    expect(callback.status).toBe(200);
+    expect(callback.body).toContain('<div id="root"></div>');
   });
 
   it("applies the static security headers from public/_headers", async () => {

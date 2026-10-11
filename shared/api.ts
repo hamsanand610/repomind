@@ -96,8 +96,16 @@ export interface VersionSummary {
 
 export interface RepoSummary {
   id: string;
-  /** "zip": an uploaded archive. Its versions' ref is the archive's file name and commitSha its content fingerprint. */
-  source: "github" | "zip";
+  /**
+   * "zip": an uploaded archive. Its versions' ref is the archive's file name and commitSha its content fingerprint.
+   * "github_app": read with the owner's GitHub App authorization (private repositories, ADR 0004).
+   */
+  source: "github" | "zip" | "github_app";
+  /**
+   * github_app only: whether the owner's GitHub authorization can still read the repository.
+   * "lost"/"revoked": content is hidden; "unknown": GitHub could not confirm it right now. Null for other sources.
+   */
+  access?: "ok" | "lost" | "revoked" | "unknown" | null;
   /** GitHub owner; empty for uploads. */
   owner: string;
   name: string;
@@ -255,6 +263,23 @@ export interface Citation {
 
 export interface AskRequest {
   question: string;
+}
+
+/** The owner's GitHub App connection (never includes tokens). */
+export interface GitHubStatusResponse {
+  /** False until the server has the GitHub App's credentials; private repositories are then unavailable. */
+  configured: boolean;
+  connected: boolean;
+  status: "active" | "revoked" | null;
+  login: string | null;
+  /** Where to install the app on more repositories. */
+  installUrl: string | null;
+}
+
+export interface GitHubRepositoriesResponse {
+  /** Repositories both the user and the app can read, from GitHub, at most 300. */
+  repositories: Array<{ id: number; fullName: string; private: boolean; defaultBranch: string }>;
+  truncated: boolean;
 }
 
 /** The upload in progress: what the browser still has to send, in order. */

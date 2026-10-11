@@ -47,6 +47,12 @@ export interface AppEnv {
   SESSION_SECRET?: string;
   INVITE_CODES?: string;
   GITHUB_TOKEN?: string;
+  /** GitHub App for private repositories (ADR 0004); the feature is off unless all four are set. */
+  GITHUB_APP_CLIENT_ID?: string;
+  GITHUB_APP_CLIENT_SECRET?: string;
+  GITHUB_APP_SLUG?: string;
+  /** 32 random bytes in base64: the AES-GCM key for stored GitHub tokens. */
+  GITHUB_TOKEN_KEY?: string;
   EMBEDDING_MODEL?: string;
   EMBEDDING_DIMS?: string;
   LLM_MODEL?: string;

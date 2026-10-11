@@ -6,7 +6,7 @@ import { type ChunkRecord, type IndexedFile, type SkippedFile, processFile } fro
 import type { Discovery } from "../shared/discovery.ts";
 import { UPLOAD_LIMITS } from "../shared/zip/limits.ts";
 import { AiBusyError, AiQuotaError, type EmbeddingProvider } from "./ai.ts";
-import { GitHubError, type GitHubClient } from "./github.ts";
+import { GitHubAccessError, GitHubError, type GitHubClient } from "./github.ts";
 import { HttpError } from "./http.ts";
 import { type Config, type Database, type VectorizeBinding, insertRows, randomId } from "./platform.ts";
 import { msUntilUtcMidnight, neuronsRemaining, recordNeurons } from "./quota.ts";
@@ -21,6 +21,8 @@ import { msUntilUtcMidnight, neuronsRemaining, recordNeurons } from "./quota.ts"
 export interface IngestDeps {
   db: Database;
   github: GitHubClient;
+  /** The client for a repository (the owner's authorization for github_app repositories); defaults to `github`. */
+  githubFor?: (repo: RepoRow) => GitHubClient;
   embedder: EmbeddingProvider | null;
   vectors: VectorizeBinding | null;
   config: Config;
@@ -69,8 +71,11 @@ class DownloadFailure extends Error {
 export interface RepoRow {
   id: string;
   owner_id: string;
-  /** "zip": an uploaded archive; gh_owner is '' and gh_repo is the upload's name. */
-  source: "github" | "zip";
+  /**
+   * "zip": an uploaded archive; gh_owner is '' and gh_repo is the upload's name.
+   * "github_app": a repository read with the owner's GitHub App authorization (ADR 0004).
+   */
+  source: "github" | "zip" | "github_app";
   gh_owner: string;
   gh_repo: string;
   requested_ref: string;
@@ -79,6 +84,11 @@ export interface RepoRow {
   latest_version_id: string | null;
   created_at: number;
   updated_at: number;
+  /** GitHub's immutable id (github_app repositories). */
+  gh_repo_id?: number | null;
+  access_checked_at?: number;
+  /** When access was found lost (0 = not lost). */
+  access_lost_at?: number;
 }
 
 export interface VersionRow {
@@ -179,15 +189,25 @@ export async function startVersion(
   repo: RepoRow,
   options: { defaultBranch?: string; discovery?: Discovery | null } = {},
 ): Promise<string> {
-  const { db, github, config } = deps;
+  const { db, config } = deps;
   const latest = await getVersion(db, repo.latest_version_id);
   if (latest?.status === "indexing") throw new HttpError(409, "conflict", "This repository is already being indexed.");
 
   const { discovery } = options;
+  const github = deps.githubFor ? deps.githubFor(repo) : deps.github;
   let ref: string;
   let sha: string;
   let tree: { files: Array<{ path: string; size: number }>; entries: number; truncated: boolean };
-  if (discovery) {
+  if (repo.source === "github_app") {
+    // Authorized repositories are discovered only on the server, with the owner's token,
+    // and must still be the same repository (GitHub id) that was added.
+    if (discovery) throw new HttpError(400, "invalid_request", "Private repositories are listed by the server.");
+    const info = await withGitHubErrors(() => github.getRepo(repo.gh_owner, repo.gh_repo));
+    if (info.id !== repo.gh_repo_id) throw new GitHubAccessError("lost");
+    ref = repo.requested_ref || info.defaultBranch;
+    sha = await withGitHubErrors(() => github.resolveCommit(info.owner, info.repo, ref));
+    tree = await withGitHubErrors(() => github.getTree(info.owner, info.repo, sha));
+  } else if (discovery) {
     if (repo.requested_ref && discovery.ref !== repo.requested_ref) {
       throw new HttpError(400, "invalid_request", "The discovered branch does not match this repository's branch.");
     }
@@ -261,6 +281,7 @@ export async function runStep(deps: IngestDeps, versionId: string): Promise<Step
     try {
       return await indexFilesStep(deps, version);
     } catch (error) {
+      if (error instanceof GitHubAccessError) return failForAccess(deps, version, error);
       return recordStepError(deps, version, error);
     }
   }
@@ -271,7 +292,7 @@ export async function runStep(deps: IngestDeps, versionId: string): Promise<Step
 }
 
 async function indexFilesStep(deps: IngestDeps, version: VersionRow): Promise<StepOutcome> {
-  const { db, github } = deps;
+  const { db } = deps;
   const repo = await db.prepare("SELECT * FROM repos WHERE id = ?").bind(version.repo_id).first<RepoRow>();
   if (!repo) return { kind: "idle" };
   const planRow = await db.prepare("SELECT plan FROM version_plans WHERE version_id = ?").bind(version.id).first<{ plan: string }>();
@@ -282,6 +303,7 @@ async function indexFilesStep(deps: IngestDeps, version: VersionRow): Promise<St
   // job reaches an upload only once it has been idle too long.
   if (repo.source === "zip") return expireUpload(deps, version);
 
+  const github = deps.githubFor ? deps.githubFor(repo) : deps.github;
   const guard = await beginWindow(deps, version, repo, plan);
   if ("outcome" in guard) return guard.outcome;
 
@@ -296,9 +318,14 @@ async function indexFilesStep(deps: IngestDeps, version: VersionRow): Promise<St
   const downloads = await Promise.allSettled(
     window.map(({ entry }) => github.getFile(repo.gh_owner, repo.gh_repo, version.commit_sha, entry[0], INGEST_LIMITS.maxFileBytes)),
   );
-  // A rate limit pauses the whole version rather than skipping files.
+  // A rate limit pauses the whole version rather than skipping files; lost authorization stops it.
   for (const result of downloads) {
+    if (result.status === "rejected" && result.reason instanceof GitHubAccessError) throw result.reason;
     if (result.status === "rejected" && result.reason instanceof GitHubError && result.reason.code === "rate_limited") throw result.reason;
+  }
+  // A file listed at a pinned commit always exists, so with the owner's token a 404 means lost access.
+  if (repo.source === "github_app" && downloads.some((result) => result.status === "fulfilled" && result.value === null)) {
+    throw new GitHubAccessError("lost");
   }
   // Nothing downloadable at the very start means a private repository, a bad
   // commit or a forged listing: fail clearly instead of indexing nothing.
@@ -613,6 +640,28 @@ async function expireUpload(deps: IngestDeps, version: VersionRow): Promise<Step
     )
     .bind(`The upload was not finished within ${UPLOAD_LIMITS.idleTimeoutMs / 3_600_000} hours, so it was stopped and its partial data removed. Upload the ZIP again.`, now, now, version.id)
     .run();
+  return { kind: "idle" };
+}
+
+/**
+ * A private repository's GitHub authorization failed mid-indexing: the
+ * version fails (its partial data is then removed by cleanup) and the
+ * repository is blocked until access is confirmed again.
+ */
+async function failForAccess(deps: IngestDeps, version: VersionRow, error: GitHubAccessError): Promise<StepOutcome> {
+  const now = deps.now();
+  const message =
+    error.reason === "lost"
+      ? "This repository is no longer accessible with your GitHub authorization, so indexing stopped and its partial data is being removed."
+      : "Your GitHub authorization was revoked or disconnected, so indexing stopped and its partial data is being removed. Connect GitHub again to re-index.";
+  await deps.db.batch([
+    deps.db
+      .prepare("UPDATE versions SET status = 'failed', error_code = ?, error_message = ?, next_attempt_at = 0, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'indexing'")
+      .bind(error.reason === "lost" ? "github_access_lost" : "github_access_revoked", message, now, now, version.id),
+    deps.db
+      .prepare("UPDATE repos SET access_lost_at = CASE WHEN access_lost_at = 0 THEN ? ELSE access_lost_at END WHERE id = ?")
+      .bind(now, version.repo_id),
+  ]);
   return { kind: "idle" };
 }
 

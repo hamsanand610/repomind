@@ -2,6 +2,8 @@ import type {
   AskRequest,
   FileContentResponse,
   FileListResponse,
+  GitHubRepositoriesResponse,
+  GitHubStatusResponse,
   HealthResponse,
   RepoListResponse,
   RepoSummary,
@@ -18,6 +20,7 @@ import {
   assertSameOrigin,
   clearedSessionCookie,
   createSessionToken,
+  readCookie,
   readSession,
   redeemInviteCode,
   requireSession,
@@ -29,6 +32,7 @@ import {
   type VersionRow,
   createRepository,
   deleteRepository,
+  failUpload,
   getRepoForOwner,
   getVersion,
   parseAdmission,
@@ -43,6 +47,8 @@ import { listFiles, readFile, searchChunks, searchPaths } from "./search.ts";
 import { ARCHIVE_COVERAGE_GAPS, validateUploadManifest } from "../shared/zip/manifest.ts";
 import { UPLOAD_BATCH_BODY_BYTES } from "../shared/zip/limits.ts";
 import { cancelUpload, createUploadRepository, indexUploadBatch, readUploadBatch, startUploadVersion, uploadStatus } from "./uploads.ts";
+import { OAUTH_COOKIE, beginAuthorization, checkAuthorization, clearedOAuthCookie, completeAuthorization, getConnection, listRepositories } from "./github-app.ts";
+import { addPrivateRepository, asHttp, checkAccess, disconnectGitHub, requireAccess, requireGitHubApp } from "./private-repos.ts";
 
 const SMALL_BODY = 4 * 1024;
 /** A discovery listing of up to 2,000 [path, size] pairs. */
@@ -69,6 +75,15 @@ export const apiRoutes: readonly Route[] = [
   { method: "GET", pattern: "/api/repos/:id/importers", handler: authed(importers) },
   { method: "GET", pattern: "/api/repos/:id/architecture", handler: authed(getArchitecture) },
   { method: "POST", pattern: "/api/repos/:id/ask", handler: authed(ask) },
+
+  { method: "POST", pattern: "/api/repos/:id/cancel", handler: authed(cancelIndexing) },
+
+  { method: "GET", pattern: "/api/github/status", handler: authed(githubStatus) },
+  { method: "POST", pattern: "/api/github/connect", handler: authed(githubConnect) },
+  { method: "POST", pattern: "/api/github/complete", handler: authed(githubComplete) },
+  { method: "GET", pattern: "/api/github/repositories", handler: authed(githubRepositories) },
+  { method: "POST", pattern: "/api/github/repositories", handler: authed(githubAddRepository) },
+  { method: "POST", pattern: "/api/github/disconnect", handler: authed(githubDisconnect) },
 
   { method: "POST", pattern: "/api/uploads", handler: authed(createUpload) },
   { method: "GET", pattern: "/api/repos/:id/upload", handler: authed(getUpload) },
@@ -179,8 +194,11 @@ export function toVersionSummary(row: VersionRow | null, indexSkips: Record<stri
   };
 }
 
-async function repoSummary(context: RequestContext, repo: RepoRow): Promise<RepoSummary> {
+async function repoSummary(context: RequestContext, initial: RepoRow): Promise<RepoSummary> {
   const db = context.services.db;
+  // Private repositories: confirm access (cached), and reload the row in case a rename was followed.
+  const access = initial.source === "github_app" ? await checkAccess(context.services, initial) : null;
+  const repo = access === null ? initial : ((await db.prepare("SELECT * FROM repos WHERE id = ?").bind(initial.id).first<RepoRow>()) ?? initial);
   const active = await getVersion(db, repo.active_version_id);
   const latest = repo.latest_version_id === repo.active_version_id ? active : await getVersion(db, repo.latest_version_id);
   const skips: Record<string, number> = {};
@@ -192,7 +210,7 @@ async function repoSummary(context: RequestContext, repo: RepoRow): Promise<Repo
     for (const row of results) skips[row.reason ?? "unknown"] = row.n;
   }
   const source = repo.source ?? "github";
-  return {
+  const summary: RepoSummary = {
     id: repo.id,
     source,
     owner: repo.gh_owner,
@@ -201,9 +219,20 @@ async function repoSummary(context: RequestContext, repo: RepoRow): Promise<Repo
     githubUrl: source === "zip" ? null : `https://github.com/${repo.gh_owner}/${repo.gh_repo}`,
     createdAt: repo.created_at,
     updatedAt: repo.updated_at,
+    access,
     active: toVersionSummary(active, skips, source),
     latest: latest === active ? toVersionSummary(active, skips, source) : toVersionSummary(latest, {}, source),
   };
+  // Without confirmed access, the owner still sees the repository's name and state (to manage or
+  // delete it) but none of its file paths: the admission report and skip lists are withheld.
+  if (access !== null && access !== "ok") {
+    for (const version of [summary.active, summary.latest]) {
+      if (!version) continue;
+      version.admission = null;
+      version.indexSkips = {};
+    }
+  }
+  return summary;
 }
 
 async function listRepos(context: RequestContext, ownerId: string): Promise<Response> {
@@ -256,10 +285,105 @@ async function reindexRepo(context: RequestContext, ownerId: string): Promise<Re
   const repo = await getRepoForOwner(db, ownerId, context.params.id);
   if (repo.source === "zip") throw new HttpError(400, "invalid_request", "This repository was uploaded as a ZIP. Upload a new version of the ZIP instead.");
   const body = await readJsonBody(context.request, DISCOVERY_BODY);
+  if (repo.source === "github_app") {
+    // Listed and pinned on the server with the owner's token; no browser listing is accepted.
+    await requireAccess(context.services, repo);
+    await enforceLimit(db, `start:${ownerId}`, dayBucket(now()), 20, "You have started 20 indexing jobs today. Try again tomorrow.");
+    try {
+      await startVersion(context.services, repo);
+    } catch (error) {
+      throw asHttp(error);
+    }
+    return jsonResponse(await repoSummary(context, await getRepoForOwner(db, ownerId, repo.id)), 202, context.requestId);
+  }
   const discovery = isRecord(body) ? readDiscovery(body, { owner: repo.gh_owner, repo: repo.gh_repo }) : null;
   await enforceLimit(db, `start:${ownerId}`, dayBucket(now()), 20, "You have started 20 indexing jobs today. Try again tomorrow.");
   await startVersion(context.services, repo, { discovery });
   return jsonResponse(await repoSummary(context, await getRepoForOwner(db, ownerId, repo.id)), 202, context.requestId);
+}
+
+/** Stops a GitHub indexing job; its partial data is removed and the previous index, if any, stays active. */
+async function cancelIndexing(context: RequestContext, ownerId: string): Promise<Response> {
+  const { db } = context.services;
+  const repo = await getRepoForOwner(db, ownerId, context.params.id);
+  const body = await readJsonBody(context.request, SMALL_BODY);
+  const version = await getVersion(db, repo.latest_version_id);
+  if (repo.source === "zip") throw new HttpError(400, "invalid_request", "Cancel an upload from its upload panel.");
+  if (!version || version.status !== "indexing" || !isRecord(body) || body.versionId !== version.id) {
+    throw new HttpError(409, "conflict", "No indexing job is running for this repository.");
+  }
+  await failUpload(context.services, version, "cancelled", "Indexing cancelled. Its partial data was removed.");
+  return jsonResponse(await repoSummary(context, await getRepoForOwner(db, ownerId, repo.id)), 200, context.requestId);
+}
+
+// --- Private repositories through the GitHub App (ADR 0004) --------------------------------
+
+async function githubStatus(context: RequestContext, ownerId: string): Promise<Response> {
+  const app = context.services.githubApp;
+  const connection = app ? await getConnection(context.services.db, ownerId) : null;
+  return jsonResponse(
+    {
+      configured: app !== null,
+      connected: connection?.status === "active",
+      status: connection ? connection.status : null,
+      login: connection?.github_login ?? null,
+      installUrl: app ? `https://github.com/apps/${app.config.slug}/installations/new` : null,
+    } satisfies GitHubStatusResponse,
+    200,
+    context.requestId,
+  );
+}
+
+async function githubConnect(context: RequestContext, ownerId: string): Promise<Response> {
+  const app = requireGitHubApp(context.services);
+  await enforceLimit(context.services.db, `github-connect:${ownerId}`, quarterHourBucket(context.services.now()), 10, "Too many connection attempts. Wait 15 minutes and try again.");
+  const { url, cookie } = await beginAuthorization(app.config, context.env.SESSION_SECRET as string, ownerId, context.url.origin, context.services.now());
+  return jsonResponse({ authorizeUrl: url }, 200, context.requestId, { "Set-Cookie": cookie });
+}
+
+async function githubComplete(context: RequestContext, ownerId: string): Promise<Response> {
+  const app = requireGitHubApp(context.services);
+  const body = await readJsonBody(context.request, SMALL_BODY);
+  const code = isRecord(body) && typeof body.code === "string" ? body.code : "";
+  const state = isRecord(body) && typeof body.state === "string" ? body.state : "";
+  const clear = { "Set-Cookie": clearedOAuthCookie };
+  const verifier = /^[A-Za-z0-9_-]{1,100}$/.test(code)
+    ? await checkAuthorization(readCookie(context.request, OAUTH_COOKIE), context.env.SESSION_SECRET as string, ownerId, state, context.services.now())
+    : null;
+  if (!verifier) {
+    throw new HttpError(400, "invalid_request", "This GitHub authorization did not start here, has expired or was already used. Connect again.", { headers: clear });
+  }
+  try {
+    const { login } = await completeAuthorization(app, ownerId, code, verifier, context.url.origin);
+    return jsonResponse({ connected: true, login }, 200, context.requestId, clear);
+  } catch (error) {
+    const safe = asHttp(error);
+    if (safe instanceof HttpError) throw new HttpError(safe.status, safe.code, safe.message, { headers: clear });
+    throw safe;
+  }
+}
+
+async function githubRepositories(context: RequestContext, ownerId: string): Promise<Response> {
+  const app = requireGitHubApp(context.services);
+  await enforceLimit(context.services.db, `github-list:${ownerId}`, minuteBucket(context.services.now()), 20, "Too many requests. Wait a minute and try again.");
+  try {
+    return jsonResponse((await listRepositories(app, ownerId)) satisfies GitHubRepositoriesResponse, 200, context.requestId);
+  } catch (error) {
+    throw asHttp(error);
+  }
+}
+
+async function githubAddRepository(context: RequestContext, ownerId: string): Promise<Response> {
+  const { db, now } = context.services;
+  const body = await readJsonBody(context.request, SMALL_BODY);
+  await enforceLimit(db, `start:${ownerId}`, dayBucket(now()), 20, "You have started 20 indexing jobs today. Try again tomorrow.");
+  const { repoId, existing } = await addPrivateRepository(context.services, ownerId, body);
+  return jsonResponse(await repoSummary(context, await getRepoForOwner(db, ownerId, repoId)), existing ? 200 : 201, context.requestId);
+}
+
+async function githubDisconnect(context: RequestContext, ownerId: string): Promise<Response> {
+  const result = await disconnectGitHub(context.services, ownerId);
+  return jsonResponse({ disconnected: true, ...result }, 200, context.requestId, { "Set-Cookie": clearedOAuthCookie });
 }
 
 /** Advances this repository's current job by one bounded step. Safe to call repeatedly. */
@@ -274,7 +398,8 @@ async function stepRepo(context: RequestContext, ownerId: string): Promise<Respo
   else if (active?.status === "ready" && active.chunks_embedded < active.chunks_embeddable) target = active;
   else {
     target = await db
-      .prepare("SELECT * FROM versions WHERE repo_id = ? AND status = 'superseded' LIMIT 1")
+      // Retired versions, and failed ones (cancelled, expired, access lost) that still hold partial data.
+      .prepare("SELECT * FROM versions WHERE repo_id = ? AND (status = 'superseded' OR (status = 'failed' AND chunks_total > 0)) LIMIT 1")
       .bind(repo.id)
       .first<VersionRow>();
   }
@@ -285,6 +410,8 @@ async function stepRepo(context: RequestContext, ownerId: string): Promise<Respo
 
 async function activeVersion(context: RequestContext, ownerId: string): Promise<{ repo: RepoRow; version: VersionRow }> {
   const repo = await getRepoForOwner(context.services.db, ownerId, context.params.id);
+  // Private repositories: content only while the owner's GitHub authorization still reads it.
+  await requireAccess(context.services, repo);
   const version = await getVersion(context.services.db, repo.active_version_id);
   if (!version) throw new HttpError(409, "conflict", "This repository has no completed index yet.");
   return { repo, version };
