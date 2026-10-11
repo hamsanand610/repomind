@@ -16,31 +16,20 @@ Every statement links to its lines. Evaluation: [docs/eval-results.md](docs/eval
 
 **Access is invite-only.** Each person gets their own private account from a single-use invitation. See [Accounts and invitations](#accounts-and-invitations).
 
+**Guides:**
+- [User guide](docs/user-guide.md): for people using RepoMind.
+- [Operations guide](docs/operations.md): invitations, accounts, deploying, quotas.
+- [Security and privacy](docs/security-and-privacy.md): what is stored and what not to upload.
+- [Release checklist](docs/release-checklist.md): verification status, risks and the production smoke test.
+
 ## Accounts and invitations
 
-Design and threat model: [ADR 0005](docs/adr/0005-invitations-and-accounts.md).
+- **Signing up.** An administrator sends a single-use invitation code (`rmi_…`). Redeeming it creates the person's own empty account and shows a personal sign-in key (`rmk_…`) once. They sign in with that key from then on; sessions last 7 days.
+- **Isolation.** The invitation grants access to RepoMind, not to anyone else's repositories. Each account holds up to 5 repositories, and no name or email address is collected.
+- **Administration.** Administrators issue, withdraw and recover with `npm run admin -- <command> --remote`. An administrator is anyone logged in to the Cloudflare account with Wrangler; the Worker has no admin page.
+- **Original invite codes.** Codes in the `INVITE_CODES` secret still sign in to their existing (shared) accounts. New people should get invitations instead; `INVITE_CODES` may now be empty.
 
-**How a new person signs up:**
-1. They receive an invitation code (`rmi_…`) privately from an administrator. It works once and expires (7 days by default).
-2. They open RepoMind, paste it into **Invitation code or sign-in key**, and choose **Continue**.
-3. RepoMind creates their own empty account and shows a personal **sign-in key** (`rmk_…`) once, with Copy and Download buttons. They confirm they saved it.
-4. Next time, they paste the sign-in key into the same field. Sessions last 7 days.
-
-The invitation grants access to RepoMind, not to anyone else's repositories. Each account sees only its own repositories, up to 5 ("3 of 5 repositories used"). No name or email address is collected.
-
-**How to invite someone (administrator):** an administrator is anyone logged in to the Cloudflare account (`npx wrangler login`); the Worker has no admin page. From this folder:
-
-```bash
-npm run admin -- invite --remote --label "for Sam"
-```
-
-- **Issuing.** The command prints the code once and stores only its SHA-256 digest. Send the code privately (a direct message, not a public channel), together with the printed steps. `--days 1..30` sets the expiry; `--count N` issues several.
-- **Withdrawing.** `npm run admin -- invitations --remote` lists invitations and their status (open, used, expired, revoked); `npm run admin -- revoke <invitation-id> --remote` withdraws an unused one.
-- **Accounts.** `npm run admin -- accounts --remote` lists accounts with their repository counts and last sign-in.
-- **Blocking.** `npm run admin -- disable <account-id> --remote` signs an account out everywhere and blocks its key; its repositories are kept. `enable` reverses it.
-- **Lost keys.** `npm run admin -- recover <account-id> --remote` prints a single-use recovery code. Entering it replaces the person's sign-in key, signs out their other sessions and keeps their repositories.
-
-**Original invite codes:** codes in the `INVITE_CODES` secret still sign in to their existing (shared) accounts. New people should get invitations instead; `INVITE_CODES` may now be empty.
+Step by step: [user guide](docs/user-guide.md) and [operations guide](docs/operations.md#invitations). Design and threat model: [ADR 0005](docs/adr/0005-invitations-and-accounts.md).
 
 ## Sources and what is analysed
 
@@ -50,7 +39,7 @@ npm run admin -- invite --remote --label "for Sam"
 | ZIP upload | Read in your browser; only admitted text files are uploaded (limits below) | Upload a new version |
 | Private GitHub repository (where enabled) | With your read-only GitHub authorization, pinned to one commit | Re-index pins the newest commit |
 
-**What is indexed:** source code, documentation and configuration text. Dependencies, build output, VCS folders, lockfiles, binaries, files that may hold credentials and files over 400 KB are left out, and secrets that look like tokens or keys are redacted from indexed text.
+**What is indexed:** source code, documentation and configuration text. Dependencies, build output, VCS folders, lockfiles, binaries, files that commonly hold credentials (such as `.env` and private keys) and files over 400 KB are left out. Ten common token and key formats are redacted from indexed text; other secrets, such as passwords in config files, are not (see [what not to upload](docs/security-and-privacy.md#what-not-to-upload)).
 
 **Languages:**
 - **Search and Ask** work on any indexed text file.
@@ -78,7 +67,7 @@ RepoMind runs on the Cloudflare Workers **Free** plan only. When a quota runs ou
 
 **When today's AI budget is used up:** Ask shows the most relevant passages without an AI answer, and semantic indexing pauses; both resume after 00:00 UTC. Keyword search, files, symbols and the architecture overview keep working.
 
-**When a daily Cloudflare limit is reached** (D1 rows written, Workers requests), requests fail until 00:00 UTC. Indexing resumes by itself.
+**When a daily Cloudflare limit is reached** (D1 rows written, Workers requests), the affected requests fail until 00:00 UTC, with a generic "Something went wrong" message. D1's write limit is shared by every account (and by the evaluation database on the same Cloudflare account). Once it is used up, sign-in, Ask and indexing all fail. Indexing resumes by itself afterwards.
 
 Verified platform limits and measurements: [docs/free-tier.md](docs/free-tier.md).
 
@@ -86,7 +75,7 @@ Verified platform limits and measurements: [docs/free-tier.md](docs/free-tier.md
 
 RepoMind can index private repositories through a GitHub App that you register. Design and threat model: [ADR 0004](docs/adr/0004-private-github-repositories.md).
 
-**Validation status:** tested locally against a GitHub fake (state, PKCE, token sealing, refresh races, revocation, lost access, isolation, disconnect) and on an isolated Cloudflare deployment with placeholder app settings (authorize URL, cookies, state checks, GitHub's rejection of an unknown app). It has **not** been tested with a real GitHub App authorization and a real private repository, and production has no app configured. Treat it as unverified until the [release smoke test](#release-smoke-test-manual) passes with a real app.
+**Validation status:** tested locally against a GitHub fake (state, PKCE, token sealing, refresh races, revocation, lost access, isolation, disconnect) and on an isolated Cloudflare deployment with placeholder app settings (authorize URL, cookies, state checks, GitHub's rejection of an unknown app). It has **not** been tested with a real GitHub App authorization and a real private repository, and production has no app configured. Treat it as unverified until the checks under [Verifying a real connection](#verifying-a-real-connection) pass with a real app.
 
 **What RepoMind can do on GitHub:**
 - **Permissions:** Contents: read-only and Metadata: read-only. Nothing else, so it cannot push, create branches, edit issues or change anything.
@@ -112,7 +101,16 @@ RepoMind can index private repositories through a GitHub App that you register. 
 3. **Set the Worker secrets** `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_CLIENT_SECRET` and `GITHUB_TOKEN_KEY` with `npx wrangler secret put <NAME>`. `GITHUB_TOKEN_KEY` is 32 random bytes in base64.
 4. **Install the app** on the repositories to index, then use **Connect GitHub** on the repositories page.
 
-Until all four secrets are set, the private-repository section stays hidden.
+Until all four secrets are set, the repositories page shows a "Private GitHub repository: Not enabled" card that points to ZIP upload instead.
+
+### Verifying a real connection
+
+Only once the app is configured; it is on hold for now.
+- **Connect GitHub.** GitHub's consent screen asks only for read access to code and metadata, and RepoMind shows "Connected as @login".
+- **Index a private repository;** search and Ask work.
+- **Isolation.** From a second account, the first account's repository URL answers "not found".
+- **Revocation.** Revoke the app under GitHub → Settings → Applications. Within 10 minutes the repository shows Content hidden.
+- **Disconnect.** Connect again, then Disconnect GitHub. Private repositories disappear; public and ZIP repositories stay.
 
 ## ZIP uploads
 
@@ -146,61 +144,35 @@ Until all four secrets are set, the private-repository section stays hidden.
 
 ## Known limitations
 
-- **Private GitHub repositories** are not enabled or verified in production (see above).
+**Accounts:**
+- **Access is by invitation;** there is no public sign-up. Sessions last 7 days.
+- **Five repositories per account,** 20 indexing jobs and 100 questions a day.
+- **A lost sign-in key cannot be shown again;** only an administrator can issue a recovery code.
+- **No self-service account deletion or data export.** People can delete their repositories; an administrator can disable an account, which keeps its data.
+- **Signing out clears the browser's session cookie only.** Disabling the account or replacing its key ends every session at once.
+
+**Shared quotas:**
+- **Shared Free-plan quotas.** The AI budget (8,500 Neurons a day), the vector storage cap (7,812 vectors) and D1's daily write limit are shared by every account. One heavy user can pause AI answers and semantic indexing for everyone, or, by re-indexing large repositories repeatedly, use up the D1 write limit so that sign-in and Ask fail until 00:00 UTC. There is no global indexing budget yet ([release checklist](docs/release-checklist.md#risks), R1).
+- **Daily-limit failures show a generic error** ("Something went wrong on our side"), not a "limit reached" message.
+
+**Indexing and answers:**
+- **Private GitHub repositories** are on hold: not enabled or verified in production.
 - **Partial indexes.** Files left out of a partial index are never searched or cited, and a definition in one of them is not found; the UI says when this may be the reason.
 - **Code navigation is line based,** not a full parser, so unusual formatting can be missed. `tsconfig.json` `paths` and bundler aliases other than `@/`, `~/` and `@site/` are not resolved.
 - **Answers come from an AI model.** RepoMind checks that every citation points at evidence it retrieved, not that every sentence is right. Read the cited lines.
+- **Secret redaction is narrow.** Ten token and key formats are redacted; other secrets in indexed files are stored and can appear in results ([what not to upload](docs/security-and-privacy.md#what-not-to-upload)).
 - **The semantic index lags.** New vectors become searchable one to three minutes after they are written, and building pauses when the daily AI budget is used up.
-- **The AI budget is shared** by every account on the deployment, so one heavy user can pause semantic indexing and AI answers for everyone until 00:00 UTC.
 - **ZIP uploads** need the tab open while files upload. Encrypted, ZIP64 and split archives are refused.
 - **Very large GitHub repositories** whose file list GitHub truncates are refused; upload a ZIP of the part you need instead.
-- **Revoked GitHub access** is noticed within 10 minutes (there is no webhook).
-- **Access is by invitation**; there is no public sign-up. Sessions last 7 days.
-- **A lost sign-in key** cannot be shown again; an administrator issues a recovery code.
-- **No self-service account deletion yet.** People can delete their repositories; an administrator can disable an account.
-- **Signing out clears the browser's session cookie only.** Disabling the account or replacing its key ends every session at once.
 
 ## Troubleshooting
 
-| What you see | What to do |
-|---|---|
-| "Repository not found. It may be private…" | Check the URL. Private repositories need Connect GitHub (where enabled) or a ZIP upload. |
-| "…more than 2,000 supported files" or "GitHub truncated this repository's file list" | The repository is too large for the free plan. Upload a ZIP of the part you need. |
-| Badge **Paused** with a reason | GitHub limited or failed some downloads. Indexing resumes by itself at the time shown. |
-| **Search ready · semantic index paused** | Today's AI budget is used up. Search, files, symbols and Ask (with keyword evidence) work now; the semantic index resumes after 00:00 UTC. |
-| **Uploading** after the tab was closed | Open the repository and choose the same ZIP again to resume. An upload without progress for 24 hours is stopped and its partial data removed. |
-| **Content hidden** | GitHub no longer confirms your access. Connect GitHub again, or reinstall the app on the repository. Without access for 7 days, the index is deleted. |
-| "You have started 20 indexing jobs today" or "today's question limit" | Wait until 00:00 UTC. |
-| An error ending in "(reference …)" | A server error. Try again; if it persists, report it with the reference. |
-| Back on the sign-in screen | Your session expired or you signed out. Paste your sign-in key again. |
-| "This invitation has already been used" | If it created your account, sign in with the sign-in key you saved. Otherwise ask for a new invitation. |
-| "This invitation has expired" or "was withdrawn" | Ask the person who sent it for a new one. |
-| Lost your sign-in key | Ask an administrator for a recovery code (`npm run admin -- recover <account-id> --remote`). Your repositories are kept. |
-| "Too many sign-in attempts" | Wait 15 minutes; sign-in and invitation attempts share a limit of 10 per address. |
+- **For people using RepoMind:** see the [user guide](docs/user-guide.md#troubleshooting).
+- **For administrators:** see the [operations guide](docs/operations.md#troubleshooting).
 
-## Release smoke test (manual)
+## Release checks
 
-Run by the owner against production in a normal browser with their own invite code. Automation never signs in to production. A small public repository costs one of the day's 20 indexing jobs and a few dozen AI Neurons.
-
-1. **Health and protection.** `GET /api/health` returns `{"status":"ok","service":"repomind"}`. Signed out, `GET /api/repos` returns 401 and `POST /api/repos` from another origin is refused.
-2. **Sign-up and sign-in.**
-   - Issue a test invitation (`npm run admin -- invite --remote --days 1 --label smoke-test`) and redeem it in a private browser window. The sign-in key appears once, Continue stays disabled until "I have saved…" is ticked, and the new account shows "Welcome to RepoMind" and "0 of 5 repositories used".
-   - Sign out, then sign in with the key. Entering the invitation again says it has already been used.
-   - In a normal window, your own account does not list the test account's repositories, and vice versa.
-   - Afterwards, disable the test account (`npm run admin -- accounts --remote`, then `disable`). Its open session returns to the sign-in screen.
-3. **Public GitHub.** Add a small repository (for example `github.com/expressjs/cors`). Progress shows real file counts; the badge moves through Indexing → Search ready → Ready.
-4. **Explore.** Open a file; at phone width the code scrolls inside its box. Search a word and an identifier; a definition opens at its line. The architecture overview loads, and each statement links to lines. Ctrl/Cmd-click on a file link opens a new tab.
-5. **Ask.** A question answered by the code gives a cited answer whose citations open the right lines. A question about something absent says the evidence isn't there. A question telling RepoMind to ignore its instructions is not obeyed.
-6. **Re-index and cancel.** Re-index keeps the old index usable; Cancel removes the new partial data and the badge says Cancelled where nothing else is indexed.
-7. **ZIP.** Upload GitHub's "Download ZIP" of a small project: Uploading with counts, then ready, with the wrapper folder removed from paths. A renamed non-ZIP file is refused with a reason.
-8. **Private GitHub** (only once the app is configured):
-   - Connect GitHub. GitHub's consent screen asks only for read access to code and metadata; RepoMind shows "Connected as @login".
-   - Index a private repository; search and Ask work.
-   - From a second account, the first account's repository URL answers "not found".
-   - Revoke the app under GitHub → Settings → Applications. Within 10 minutes the repository shows Content hidden.
-   - Connect again; then Disconnect GitHub. Private repositories disappear; public and ZIP repositories stay.
-9. **Delete.** Delete each test repository. It leaves the list, and its URL answers "not found".
-10. **Quotas.** In the Cloudflare dashboard, Workers AI Neurons and D1 rows written stay within the free limits, and the once-a-minute cron runs without CPU errors.
+The verification status, open risks and the production smoke test are in the [release checklist](docs/release-checklist.md). Deployment and rollback steps are in the [operations guide](docs/operations.md#deploying).
 
 ## Stack
 
@@ -229,7 +201,7 @@ See [ADR 0001](docs/adr/0001-architecture-baseline.md) for the decisions and [do
 | `npm run eval:scale` | Larger-repository evaluation on Cloudflare against the isolated eval deployment (`wrangler.eval-remote.jsonc`): admission, indexing time, search, answers with checked citations, UI states, AI usage and D1 rows |
 | `npm run eval:code` | Code-intelligence evaluation (definitions, usages, imports, importers, dependencies, overview, plus a random held-out sample) on seven pinned repositories, in process, no AI quota; `eval/code-intel-remote.ts` repeats it on the isolated Cloudflare deployment |
 | `eval/github-remote.ts` | Private-repository plumbing on the isolated Cloudflare deployment with placeholder app settings: authorize URL, PKCE, cookie flags, state checks, GitHub's rejection of an unknown app, "connect first" answers; public GitHub and ZIP indexing on the same build |
-| `npm run admin -- <command>` | Invitations and accounts (administrator only, through Wrangler); see [Accounts and invitations](#accounts-and-invitations) |
+| `npm run admin -- <command>` | Invitations and accounts (administrator only, through Wrangler); see the [operations guide](docs/operations.md) |
 | `eval/accounts-remote.ts` | Multi-user onboarding on the isolated Cloudflare deployment: CLI-issued invitations, concurrent redemption, isolation, the repository limit under concurrent adds, disable, recovery and the sign-in rate limit |
 | `eval/upload-remote.ts` | ZIP uploads on the isolated Cloudflare deployment: archives built from pinned repositories, uploaded like the browser does, checked for paths, lines, search, symbols, duplicates, cancellation and deletion |
 | `npm run deploy` | Build and deploy. Requires Cloudflare login; deploy only when authorized. |
@@ -245,7 +217,8 @@ shared/     Pure TypeScript shared by the Worker and the browser (API contract, 
             zip/: the browser-side ZIP reader, upload manifest and its server-side validation)
 tests/      unit/ (Node) and integration/ (built output in workerd)
 bench/      E1 benchmark harness and deterministic synthetic fixture (results git-ignored)
-docs/       Architecture decisions and free-tier policy
+docs/       Guides (user, operations, security and privacy, release checklist), architecture
+            decisions (adr/), free-tier policy and evaluation results
 public/     Static files, including _headers (security headers for assets)
 ```
 
