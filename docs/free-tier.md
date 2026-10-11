@@ -83,6 +83,7 @@ These numbers come from the isolated evaluation deployment running the productio
 | Sign-in and invitation attempts | 10 per 15 minutes per client address, shared | 429; codes are 128-bit and keys 160-bit, so guessing is not feasible anyway ([ADR 0005](adr/0005-invitations-and-accounts.md)) |
 | Invitations | single use, expire after 1–30 days (default 7) | Issued only by an administrator through Wrangler; an invited account's session costs one D1 row read per request |
 | Requests per account | Ask 6 a minute and 100 a day; search, symbols and importers 60 a minute; file lists, files and architecture 120 a minute; 20 indexing starts a day | 429 with a fixed message; the full table is in the [README](../README.md#free-plan-limits-and-quota-behaviour) |
+| Background D1 writes | 55,000 a day for everyone, 20,000 per account | Jobs pause until after 00:00 UTC, and new jobs are refused with a clear message ([ADR 0006](adr/0006-d1-write-budget.md)) |
 
 **Why private repositories fit the Free plan ([ADR 0004](adr/0004-private-github-repositories.md)):**
 - **No new Cloudflare resources.** One D1 table (`github_connections`), three columns on `repos`, WebCrypto, and the existing cron trigger.

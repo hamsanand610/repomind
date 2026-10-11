@@ -117,14 +117,34 @@ npx wrangler d1 execute repomind-db --remote --command "SELECT bucket, count FRO
 
 | Resource | Free limit | RepoMind's guard | Measured (2026-10-11) |
 |---|---|---|---|
-| D1 rows written | 100,000 a day, for the whole Cloudflare account | **None across accounts** (20 indexing starts per account a day) | 24,475 (rolling 24 h; the evaluation database on the same account added 61,132) |
+| D1 rows written | 100,000 a day, for the whole Cloudflare account | Background indexing capped at 55,000 a day and 20,000 per account ([ADR 0006](adr/0006-d1-write-budget.md); in effect once deployed) | 24,475 (rolling 24 h; the evaluation database on the same account added 61,132) |
 | D1 storage | 500 MB per database | 1,500 chunks per repository, 5 repositories per account | 5.9 MB |
 | Workers AI | 10,000 Neurons a day | Stops at 8,500, shared by all accounts | 0 today; 1,686 on 2026-10-10 |
 | Vectorize | 5 M stored dimensions (about 9,765 vectors at 512 dimensions) | Embedding pauses at 7,812 vectors | 1,325 vectors |
 
 `rows_read_24h` and `rows_written_24h` are rolling 24-hour totals and lag by a few minutes.
 
-**One account can use up shared quotas:**
+### The indexing write budget (ADR 0006)
+
+Background indexing, embedding and cleanup may write at most `INDEX_WRITE_BUDGET` D1 rows per UTC day. The default is 55,000; the rest of the 100,000 is headroom.
+
+- **Per account.** Each account can start jobs worth at most `ACCOUNT_INDEX_WRITE_SHARE` rows a day (default 20,000, about one large repository).
+- **When the budget runs out,** jobs pause until shortly after 00:00 UTC, and new jobs are refused with a clear message. Sign-in, reading, search, Ask, cancel and delete keep working.
+- **Changing the values.** Both are Worker variables. Production uses the code defaults; `wrangler.eval-remote.jsonc` gives the evaluation deployment 10,000.
+
+Today's ledger and the busiest accounts:
+
+```bash
+npx wrangler d1 execute repomind-db --remote --command "SELECT scope, count FROM usage_counters WHERE scope LIKE 'index-writes%' AND bucket = strftime('%Y-%m-%d','now') ORDER BY count DESC LIMIT 10"
+```
+
+**Precautions until the budget has run in production for a while:**
+- Invite only a small, trusted group.
+- Run no evaluations on this Cloudflare account during the release window. The evaluation database shares the account-wide limit.
+- Check `npx wrangler d1 info repomind-db` once a day.
+- Confirm that Cloudflare's daily-limit email alerts reach you. Cloudflare sends them when the D1 daily limit is reached.
+
+**Before the budget was introduced, one account could use up shared quotas:**
 - Re-indexing a large repository writes roughly 8 D1 rows per chunk, about 12,000 for a 1,500-chunk repository.
 - 20 such starts in a day would exceed the account-wide 100,000-row limit. After that, every write fails until 00:00 UTC, including sign-in and Ask, and users see "Something went wrong on our side".
 - If that happens, disable the account responsible (`npm run admin -- accounts --remote` shows repository counts) and wait for the reset.

@@ -152,7 +152,7 @@ Only once the app is configured; it is on hold for now.
 - **Signing out clears the browser's session cookie only.** Disabling the account or replacing its key ends every session at once.
 
 **Shared quotas:**
-- **Shared Free-plan quotas.** The AI budget (8,500 Neurons a day), the vector storage cap (7,812 vectors) and D1's daily write limit are shared by every account. One heavy user can pause AI answers and semantic indexing for everyone, or, by re-indexing large repositories repeatedly, use up the D1 write limit so that sign-in and Ask fail until 00:00 UTC. There is no global indexing budget yet ([release checklist](docs/release-checklist.md#risks), R1).
+- **Shared Free-plan quotas.** The AI budget (8,500 Neurons a day), the vector storage cap (7,812 vectors) and D1's daily write limit are shared by every account. One heavy user can pause AI answers and semantic indexing for everyone, or, by re-indexing large repositories repeatedly, use up the D1 write limit so that sign-in and Ask fail until 00:00 UTC. Background indexing is limited to a daily write budget, 55,000 rows for everyone and 20,000 per account, so that it cannot exhaust D1 ([ADR 0006](docs/adr/0006-d1-write-budget.md)). Jobs over the budget pause until after 00:00 UTC.
 - **Daily-limit failures show a generic error** ("Something went wrong on our side"), not a "limit reached" message.
 
 **Indexing and answers:**

@@ -110,6 +110,10 @@ These are on the **Overview** tab, under **Manage**:
 | "…more than 2,000 supported files" or "GitHub truncated this repository's file list" | The repository is too large. Upload a ZIP of the part you need. |
 | "You can index up to 5 repositories" | Delete a repository you no longer need. |
 | "You have started 20 indexing jobs today" or "today's question limit" | Wait until 00:00 UTC. |
+| "RepoMind's shared indexing capacity for today is used up" | Indexing for everyone has reached today's limit. Your repositories keep working; new indexing resumes after 00:00 UTC, and paused jobs continue by themselves. |
+| "You have used today's indexing allowance for your account" | Each account can index about one large repository a day. Try again after 00:00 UTC. |
+| "…already indexed at the latest commit" or "same content as the version already indexed" | Nothing has changed since the last index, so there is nothing to re-index. |
+| An upload stops with "Your upload is kept" | Choose the same ZIP again after 00:00 UTC to continue it (within 24 hours). |
 | **Search ready · semantic index paused** | The day's shared AI budget is used up. Search, files and Ask (with keyword evidence) work now. |
 | **Uploading** after you closed the tab | Choose the same ZIP again on the repository page to resume. |
 | An error ending in "(reference …)" | Try again. If it persists, send the reference to the person who runs RepoMind. |
