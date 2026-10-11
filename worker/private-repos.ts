@@ -1,7 +1,7 @@
 import { type GitHubAppDeps, getConnection, revokeGrant, storedAccessToken, verifyRepository } from "./github-app.ts";
 import { GitHubAccessError, GitHubError } from "./github.ts";
 import { HttpError } from "./http.ts";
-import { type IngestDeps, type RepoRow, deleteRepository, getRepoForOwner, startVersion } from "./ingest.ts";
+import { type IngestDeps, type RepoRow, UNDER_REPO_LIMIT, assertUnderRepoLimit, deleteRepository, getRepoForOwner, repoLimitError, startVersion } from "./ingest.ts";
 import { randomId } from "./platform.ts";
 
 /**
@@ -125,20 +125,19 @@ export async function addPrivateRepository(deps: PrivateDeps, ownerId: string, b
   // Same answer for "does not exist" and "no access", so nothing is revealed.
   if (!info) throw new HttpError(404, "not_found", "Repository not found, or your GitHub authorization cannot read it.");
 
-  const count = await deps.db.prepare("SELECT COUNT(*) AS n FROM repos WHERE owner_id = ?").bind(ownerId).first<{ n: number }>();
-  if ((count?.n ?? 0) >= deps.config.maxReposPerOwner) {
-    throw new HttpError(409, "repo_limit", `You can index up to ${deps.config.maxReposPerOwner} repositories. Delete one to add another.`);
-  }
+  await assertUnderRepoLimit(deps.db, ownerId, deps.config.maxReposPerOwner);
   const now = deps.now();
   const repoId = randomId("r");
   const inserted = await deps.db
     .prepare(
       `INSERT INTO repos (id, owner_id, source, gh_owner, gh_repo, requested_ref, default_branch, gh_repo_id, access_checked_at, created_at, updated_at)
-       VALUES (?, ?, 'github_app', ?, ?, '', ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+       SELECT ?, ?, 'github_app', ?, ?, '', ?, ?, ?, ?, ? WHERE ${UNDER_REPO_LIMIT} ON CONFLICT DO NOTHING`,
     )
-    .bind(repoId, ownerId, info.owner, info.repo, info.defaultBranch, info.id, now, now, now)
+    .bind(repoId, ownerId, info.owner, info.repo, info.defaultBranch, info.id, now, now, now, ownerId, deps.config.maxReposPerOwner)
     .run();
-  if (inserted.meta.changes === 0) {
+  if (!inserted.meta.changes) {
+    const count = await deps.db.prepare("SELECT COUNT(*) AS n FROM repos WHERE owner_id = ?").bind(ownerId).first<{ n: number }>();
+    if ((count?.n ?? 0) >= deps.config.maxReposPerOwner) throw repoLimitError(deps.config.maxReposPerOwner);
     throw new HttpError(409, "conflict", "You already added this repository as a public repository. Delete that one first to index it through GitHub.");
   }
   try {

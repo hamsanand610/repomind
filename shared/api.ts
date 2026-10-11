@@ -27,6 +27,13 @@ export type ApiErrorCode =
   | "github_error"
   | "content_mismatch"
   | "unavailable"
+  | "invalid_invitation"
+  | "invitation_used"
+  | "invitation_expired"
+  | "invitation_revoked"
+  | "use_invitation"
+  | "account_disabled"
+  | "account_unavailable"
   | "internal_error";
 
 /**
@@ -62,8 +69,14 @@ export interface ValidateRepoUrlResponse {
 
 export interface SessionResponse {
   authenticated: boolean;
-  /** False when the server has no invite codes or session secret configured. */
+  /** False when the server has no session secret configured. */
   configured: boolean;
+}
+
+/** A redeemed invitation. The sign-in key is shown to the user once and never stored in plain form. */
+export interface RedeemResponse extends SessionResponse {
+  purpose: "account" | "recovery";
+  signInKey: string;
 }
 
 export type VersionStatus = "indexing" | "ready" | "failed" | "superseded";

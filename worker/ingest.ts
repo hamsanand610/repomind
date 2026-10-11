@@ -145,6 +145,23 @@ export async function getVersion(db: Database, versionId: string | null): Promis
   return db.prepare("SELECT * FROM versions WHERE id = ?").bind(versionId).first<VersionRow>();
 }
 
+/**
+ * The per-account repository cap, evaluated inside each INSERT (bind the owner
+ * ID and the limit) so concurrent adds cannot exceed it. SQLite runs one write
+ * at a time, so the count and the insert cannot interleave with another add.
+ */
+export const UNDER_REPO_LIMIT = "(SELECT COUNT(*) FROM repos WHERE owner_id = ?) < ?";
+
+export function repoLimitError(limit: number): HttpError {
+  return new HttpError(409, "repo_limit", `You can index up to ${limit} repositories. Delete one to add another.`);
+}
+
+/** A fast, early refusal before any GitHub call; the INSERT re-checks. */
+export async function assertUnderRepoLimit(db: Database, ownerId: string, limit: number): Promise<void> {
+  const count = await db.prepare("SELECT COUNT(*) AS n FROM repos WHERE owner_id = ?").bind(ownerId).first<{ n: number }>();
+  if ((count?.n ?? 0) >= limit) throw repoLimitError(limit);
+}
+
 export async function createRepository(
   deps: IngestDeps,
   ownerId: string,
@@ -159,23 +176,29 @@ export async function createRepository(
     .first<{ id: string }>();
   if (existing) return { repoId: existing.id, existing: true };
 
-  const count = await db.prepare("SELECT COUNT(*) AS n FROM repos WHERE owner_id = ?").bind(ownerId).first<{ n: number }>();
-  if ((count?.n ?? 0) >= deps.config.maxReposPerOwner) {
-    throw new HttpError(409, "repo_limit", `You can index up to ${deps.config.maxReposPerOwner} repositories. Delete one to add another.`);
-  }
+  await assertUnderRepoLimit(db, ownerId, deps.config.maxReposPerOwner);
 
   const info = discovery
     ? { owner: discovery.owner, repo: discovery.repo, defaultBranch: discovery.defaultBranch }
     : await withGitHubErrors(() => deps.github.getRepo(locator.owner, locator.repo));
   const now = deps.now();
   const repoId = randomId("r");
-  await db
+  const inserted = await db
     .prepare(
       `INSERT INTO repos (id, owner_id, gh_owner, gh_repo, requested_ref, default_branch, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE ${UNDER_REPO_LIMIT} ON CONFLICT DO NOTHING`,
     )
-    .bind(repoId, ownerId, info.owner, info.repo, requestedRef, info.defaultBranch, now, now)
+    .bind(repoId, ownerId, info.owner, info.repo, requestedRef, info.defaultBranch, now, now, ownerId, deps.config.maxReposPerOwner)
     .run();
+  if (!inserted.meta.changes) {
+    // Another request added this repository, or reached the limit, first.
+    const raced = await db
+      .prepare("SELECT id FROM repos WHERE owner_id = ? AND lower(gh_owner) = lower(?) AND lower(gh_repo) = lower(?) AND requested_ref = ?")
+      .bind(ownerId, info.owner, info.repo, requestedRef)
+      .first<{ id: string }>();
+    if (raced) return { repoId: raced.id, existing: true };
+    throw repoLimitError(deps.config.maxReposPerOwner);
+  }
   const repo = await getRepoForOwner(db, ownerId, repoId);
   await startVersion(deps, repo, { defaultBranch: info.defaultBranch, discovery });
   return { repoId, existing: false };

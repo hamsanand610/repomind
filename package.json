@@ -10,6 +10,7 @@
     "preview": "npm run build && vite preview",
     "deploy": "npm run build && wrangler deploy",
     "cf-typegen": "wrangler types",
+    "admin": "node --disable-warning=ExperimentalWarning scripts/admin.ts",
     "test": "vitest run --project unit",
     "test:integration": "npm run build && vitest run --project integration",
     "bench:e1": "node --expose-gc --disable-warning=ExperimentalWarning bench/e1.ts",

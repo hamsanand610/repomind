@@ -1,15 +1,21 @@
+import { accountSessionIsCurrent } from "./accounts.ts";
 import { HttpError } from "./http.ts";
-import { type AppEnv, base64url, base64urlDecode } from "./platform.ts";
+import { type AppEnv, type Database, base64url, base64urlDecode } from "./platform.ts";
 
 /**
- * Invite-code authentication with stateless, signed, expiring sessions.
+ * Authentication with signed, expiring sessions. Two kinds of account:
  *
- * - Invite codes live only in the INVITE_CODES secret. Each code is one
- *   account: its owner ID is derived from a hash of the code.
- * - The session cookie carries `payload.signature` (HMAC-SHA-256 with
- *   SESSION_SECRET). It is HttpOnly, Secure and SameSite=Strict.
- * - Removing a code from INVITE_CODES revokes its sessions on the next
- *   request; rotating SESSION_SECRET revokes all sessions.
+ * - **Invited accounts** (worker/accounts.ts): created by redeeming a
+ *   single-use invitation, signed in with a personal key. Their sessions
+ *   carry the account's session epoch and are checked against D1 on every
+ *   request, so disabling the account or replacing its key ends them.
+ * - **Invite-code accounts** (the original model): each code in the
+ *   INVITE_CODES secret is one account whose owner ID is derived from a hash
+ *   of the code. Removing a code revokes its sessions on the next request.
+ *
+ * The session cookie carries `payload.signature` (HMAC-SHA-256 with
+ * SESSION_SECRET). It is HttpOnly, Secure and SameSite=Strict. Rotating
+ * SESSION_SECRET revokes all sessions.
  */
 
 export const SESSION_COOKIE = "rm_session";
@@ -20,6 +26,8 @@ const MAX_CODE_LENGTH = 200;
 export interface Session {
   ownerId: string;
   expiresAt: number;
+  /** Present for invited accounts: the account's session epoch when signed in. */
+  epoch?: number;
 }
 
 const encoder = new TextEncoder();
@@ -80,8 +88,9 @@ export async function redeemInviteCode(env: AppEnv, code: string): Promise<strin
   return match === null ? null : ownerIdForCode(match);
 }
 
-export async function createSessionToken(secret: string, ownerId: string, now: number): Promise<string> {
-  const payload = base64url(encoder.encode(JSON.stringify({ v: 1, sub: ownerId, exp: now + SESSION_TTL_MS })));
+export async function createSessionToken(secret: string, ownerId: string, now: number, epoch?: number): Promise<string> {
+  const claims = epoch === undefined ? { v: 1, sub: ownerId, exp: now + SESSION_TTL_MS } : { v: 1, sub: ownerId, exp: now + SESSION_TTL_MS, e: epoch };
+  const payload = base64url(encoder.encode(JSON.stringify(claims)));
   const signature = new Uint8Array(await crypto.subtle.sign("HMAC", await hmacKey(secret), encoder.encode(payload)));
   return `${payload}.${base64url(signature)}`;
 }
@@ -95,9 +104,10 @@ export async function verifySessionToken(secret: string, token: string, now: num
   const valid = await crypto.subtle.verify("HMAC", await hmacKey(secret), signatureBytes, encoder.encode(payload));
   if (!valid) return null;
   try {
-    const data = JSON.parse(new TextDecoder().decode(payloadBytes)) as { v?: number; sub?: unknown; exp?: unknown };
+    const data = JSON.parse(new TextDecoder().decode(payloadBytes)) as { v?: number; sub?: unknown; exp?: unknown; e?: unknown };
     if (data.v !== 1 || typeof data.sub !== "string" || typeof data.exp !== "number" || data.exp <= now) return null;
-    return { ownerId: data.sub, expiresAt: data.exp };
+    if (data.e !== undefined && !Number.isInteger(data.e)) return null;
+    return data.e === undefined ? { ownerId: data.sub, expiresAt: data.exp } : { ownerId: data.sub, expiresAt: data.exp, epoch: data.e as number };
   } catch {
     return null;
   }
@@ -121,22 +131,27 @@ export function clearedSessionCookie(): string {
   return `${SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`;
 }
 
-/** The current session, or null. Sessions whose invite code was removed are rejected. */
-export async function readSession(request: Request, env: AppEnv, now: number): Promise<Session | null> {
+/**
+ * The current session, or null. An invite-code session needs its code still in
+ * INVITE_CODES; an invited account's session needs the account active with the
+ * same session epoch.
+ */
+export async function readSession(request: Request, env: AppEnv, db: Database, now: number): Promise<Session | null> {
   if (!env.SESSION_SECRET) return null;
   const token = readCookie(request, SESSION_COOKIE);
   if (!token) return null;
   const session = await verifySessionToken(env.SESSION_SECRET, token, now);
   if (!session) return null;
-  return (await allowedOwners(env.INVITE_CODES)).has(session.ownerId) ? session : null;
+  if (session.epoch === undefined) return (await allowedOwners(env.INVITE_CODES)).has(session.ownerId) ? session : null;
+  return (await accountSessionIsCurrent(db, { ownerId: session.ownerId, epoch: session.epoch })) ? session : null;
 }
 
-export async function requireSession(request: Request, env: AppEnv, now: number): Promise<Session> {
-  if (!env.SESSION_SECRET || !env.INVITE_CODES) {
+export async function requireSession(request: Request, env: AppEnv, db: Database, now: number): Promise<Session> {
+  if (!env.SESSION_SECRET) {
     throw new HttpError(503, "not_configured", "Sign-in is not configured on this server yet.");
   }
-  const session = await readSession(request, env, now);
-  if (!session) throw new HttpError(401, "unauthorized", "Sign in with your invite code to continue.");
+  const session = await readSession(request, env, db, now);
+  if (!session) throw new HttpError(401, "unauthorized", "Sign in to continue.");
   return session;
 }
 

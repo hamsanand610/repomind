@@ -104,6 +104,13 @@ describe("API routes always reach the Worker", () => {
     }
   });
 
+  it("routes invitation redemption to the Worker, which refuses a request without a code", async () => {
+    const response = await send("/api/auth/redeem", { method: "POST", headers: { "Content-Type": "application/json", "Content-Length": "0" } });
+    expect([400, 401]).toContain(response.status);
+    expect(response.headers["content-type"]).toContain("application/json");
+    expect(response.headers["set-cookie"]).toBeUndefined();
+  });
+
   it("routes the ZIP upload endpoints to the Worker, which requires a session", async () => {
     for (const [method, path] of [["POST", "/api/uploads"], ["GET", "/api/repos/r_x/upload"], ["POST", "/api/repos/r_x/upload/files"], ["POST", "/api/repos/r_x/upload/cancel"]]) {
       // Empty bodies: the local preview proxy (not the Worker) fails the request that follows

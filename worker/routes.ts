@@ -8,6 +8,7 @@ import type {
   RepoListResponse,
   RepoSummary,
   SearchResponse,
+  RedeemResponse,
   SessionResponse,
   UploadBatchResponse,
   ValidateRepoUrlResponse,
@@ -15,6 +16,8 @@ import type {
 } from "../shared/api.ts";
 import { type Discovery, validateDiscovery } from "../shared/discovery.ts";
 import { describeGitHubUrlError, parseGitHubRepoUrl } from "../shared/github-url.ts";
+import { isInvitationCode, isSignInKey } from "../shared/accounts.ts";
+import { redeemInvitation, signInWithKey } from "./accounts.ts";
 import { answerQuestion } from "./ask.ts";
 import {
   assertSameOrigin,
@@ -60,6 +63,7 @@ export const apiRoutes: readonly Route[] = [
 
   { method: "GET", pattern: "/api/auth/session", handler: getSession },
   { method: "POST", pattern: "/api/auth/login", handler: login },
+  { method: "POST", pattern: "/api/auth/redeem", handler: redeem },
   { method: "POST", pattern: "/api/auth/logout", handler: logout },
 
   { method: "GET", pattern: "/api/repos", handler: authed(listRepos) },
@@ -98,7 +102,7 @@ type AuthedHandler = (context: RequestContext, ownerId: string) => Promise<Respo
 function authed(handler: AuthedHandler) {
   return async (context: RequestContext) => {
     assertSameOrigin(context.request, context.url);
-    const session = await requireSession(context.request, context.env, context.services.now());
+    const session = await requireSession(context.request, context.env, context.services.db, context.services.now());
     return handler(context, session.ownerId);
   };
 }
@@ -122,30 +126,55 @@ async function validateUrl({ request, requestId }: RequestContext): Promise<Resp
 // --- Auth ----------------------------------------------------------------------
 
 async function getSession({ request, env, services, requestId }: RequestContext): Promise<Response> {
-  const configured = Boolean(env.SESSION_SECRET && env.INVITE_CODES);
-  const session = configured ? await readSession(request, env, services.now()) : null;
+  const configured = Boolean(env.SESSION_SECRET);
+  const session = configured ? await readSession(request, env, services.db, services.now()) : null;
   return jsonResponse({ authenticated: session !== null, configured } satisfies SessionResponse, 200, requestId);
 }
 
-async function login({ request, url, env, services, requestId }: RequestContext): Promise<Response> {
+/**
+ * Shared by sign-in and invitation redemption: same-origin, configured, and
+ * one budget of 10 attempts per 15 minutes per client address (hashed; the
+ * raw IP is never stored), so the two cannot be combined to guess faster.
+ */
+async function authAttempt({ request, url, env, services }: RequestContext): Promise<{ secret: string; code: string; now: number }> {
   assertSameOrigin(request, url);
-  if (!env.SESSION_SECRET || !env.INVITE_CODES) {
-    throw new HttpError(503, "not_configured", "Sign-in is not configured on this server yet.");
-  }
+  if (!env.SESSION_SECRET) throw new HttpError(503, "not_configured", "Sign-in is not configured on this server yet.");
   const now = services.now();
-  // Throttle guesses per client address (hashed; the raw IP is never stored).
   const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
   const ipKey = await hashKey(`login:${ip}`);
   await enforceLimit(services.db, `login:${ipKey}`, quarterHourBucket(now), 10, "Too many sign-in attempts. Wait 15 minutes and try again.");
-
   const body = await readJsonBody(request, SMALL_BODY);
   const code = isRecord(body) && typeof body.code === "string" ? body.code.trim() : "";
-  const ownerId = await redeemInviteCode(env, code);
-  if (!ownerId) throw new HttpError(401, "unauthorized", "That invite code is not valid.");
+  return { secret: env.SESSION_SECRET, code, now };
+}
 
-  await services.db.prepare("INSERT OR IGNORE INTO owners (id, created_at) VALUES (?, ?)").bind(ownerId, now).run();
-  const token = await createSessionToken(env.SESSION_SECRET, ownerId, now);
+/** Signs in with a personal sign-in key (invited accounts) or an INVITE_CODES code. */
+async function login(context: RequestContext): Promise<Response> {
+  const { secret, code, now } = await authAttempt(context);
+  const { env, services, requestId } = context;
+  if (isInvitationCode(code)) {
+    throw new HttpError(400, "use_invitation", "That is an invitation code. Use it under “Join with an invitation” to create your account.");
+  }
+  let token: string;
+  if (isSignInKey(code)) {
+    const account = await signInWithKey(services.db, code, now);
+    token = await createSessionToken(secret, account.ownerId, now, account.epoch);
+  } else {
+    const ownerId = await redeemInviteCode(env, code);
+    if (!ownerId) throw new HttpError(401, "unauthorized", "That sign-in key is not valid.");
+    await services.db.prepare("INSERT OR IGNORE INTO owners (id, created_at) VALUES (?, ?)").bind(ownerId, now).run();
+    token = await createSessionToken(secret, ownerId, now);
+  }
   return jsonResponse({ authenticated: true, configured: true } satisfies SessionResponse, 200, requestId, { "Set-Cookie": sessionCookie(token) });
+}
+
+/** Redeems a single-use invitation: a new account (or a recovered one) and its sign-in key, shown once. */
+async function redeem(context: RequestContext): Promise<Response> {
+  const { secret, code, now } = await authAttempt(context);
+  const result = await redeemInvitation(context.services.db, code, now);
+  const token = await createSessionToken(secret, result.ownerId, now, result.epoch);
+  const body: RedeemResponse = { authenticated: true, configured: true, purpose: result.purpose, signInKey: result.signInKey };
+  return jsonResponse(body, 200, context.requestId, { "Set-Cookie": sessionCookie(token) });
 }
 
 async function logout({ request, url, requestId }: RequestContext): Promise<Response> {

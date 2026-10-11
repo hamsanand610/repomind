@@ -16,6 +16,9 @@ import {
   getVersion,
   indexWindow,
   openVersion,
+  UNDER_REPO_LIMIT,
+  assertUnderRepoLimit,
+  repoLimitError,
 } from "./ingest.ts";
 import { randomId } from "./platform.ts";
 
@@ -39,21 +42,25 @@ export async function createUploadRepository(deps: IngestDeps, ownerId: string, 
     .bind(ownerId, manifest.name)
     .first<{ id: string }>();
   if (existing) throw nameTaken(manifest.name);
-  const count = await db.prepare("SELECT COUNT(*) AS n FROM repos WHERE owner_id = ?").bind(ownerId).first<{ n: number }>();
-  if ((count?.n ?? 0) >= deps.config.maxReposPerOwner) {
-    throw new HttpError(409, "repo_limit", `You can index up to ${deps.config.maxReposPerOwner} repositories. Delete one to add another.`);
-  }
+  await assertUnderRepoLimit(db, ownerId, deps.config.maxReposPerOwner);
   const now = deps.now();
   const repoId = randomId("r");
-  // The UNIQUE constraint settles two identical submissions racing each other.
+  // The UNIQUE constraint settles two identical submissions racing each other,
+  // and the cap is re-checked inside the INSERT.
   const inserted = await db
     .prepare(
       `INSERT INTO repos (id, owner_id, source, gh_owner, gh_repo, requested_ref, default_branch, created_at, updated_at)
-       VALUES (?, ?, 'zip', '', ?, '', NULL, ?, ?) ON CONFLICT DO NOTHING`,
+       SELECT ?, ?, 'zip', '', ?, '', NULL, ?, ? WHERE ${UNDER_REPO_LIMIT} ON CONFLICT DO NOTHING`,
     )
-    .bind(repoId, ownerId, manifest.name, now, now)
+    .bind(repoId, ownerId, manifest.name, now, now, ownerId, deps.config.maxReposPerOwner)
     .run();
-  if (inserted.meta.changes === 0) throw nameTaken(manifest.name);
+  if (!inserted.meta.changes) {
+    const taken = await db
+      .prepare("SELECT id FROM repos WHERE owner_id = ? AND source = 'zip' AND lower(gh_repo) = lower(?)")
+      .bind(ownerId, manifest.name)
+      .first<{ id: string }>();
+    throw taken ? nameTaken(manifest.name) : repoLimitError(deps.config.maxReposPerOwner);
+  }
   await startUploadVersion(deps, await getRepoForOwner(db, ownerId, repoId), manifest);
   return repoId;
 }
