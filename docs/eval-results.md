@@ -541,3 +541,37 @@ D1 work per background step, measured locally on a 71-file repository: the relea
 | UI | Public adds that admission would refuse used a repository slot and a daily start | Refused in the browser with the server's message first |
 
 No cross-tenant access, credential exposure or code execution path was found. One process note: during the audit, a review agent attempted to read the git-ignored `.dev.vars` file, against its instructions. The permission system blocked the read, and nothing from that file was seen or used.
+
+# Multi-user onboarding evaluation (2026-10-11)
+
+**What changed:** single-use invitations, individual accounts with personal sign-in keys, and an atomic repository limit ([ADR 0005](adr/0005-invitations-and-accounts.md)).
+
+**Where it ran:**
+1. **Unit tests** (`tests/unit/accounts.test.ts`, 13 tests) on the real SQLite schema.
+2. **A local browser pass** against a local Worker with its own database and no AI or Vectorize bindings.
+3. **The isolated Cloudflare deployment** (`eval/accounts-remote.ts`): its own Worker and D1, `DAILY_NEURON_BUDGET=0`. Invitations were issued with the real admin CLI against that database; everything else went through the Worker over HTTPS. The Worker was deleted afterwards and the test data removed.
+
+**Not tested in production:** automation never signs in to production, so no invitation was redeemed there. Production was checked for the migration, health, route protection and unauthenticated refusals only.
+
+## Results
+
+| Case | Unit tests | Cloudflare (eval) |
+|---|---|---|
+| Two invitations create two accounts with different keys | pass | pass |
+| Codes and keys stored only as digests | pass | — |
+| The same code redeemed twice at the same moment: exactly one succeeds | pass | pass (200, 409) |
+| Used, unknown, expired, withdrawn and malformed codes refused, no session | pass | pass (used, unknown, withdrawn) |
+| Pasted code with spaces or capitals accepted | pass | — |
+| Sign in again with the personal key; an invitation code at sign-in is pointed to the right form | pass | pass (key) |
+| Another account cannot list, open, search, ask, re-index or delete a repository | pass | pass (list, open, search, delete) |
+| A forged session of one kind cannot pass as the other | pass | — |
+| Disabling an account ends its sessions at once and refuses its key | pass | pass |
+| A recovery code replaces the key, ends old sessions, keeps the repositories; not usable for a disabled account | pass | pass (first part) |
+| Sign-in and redemption share 10 attempts per 15 minutes per address | pass | pass (the 11th attempt: 429) |
+| Five repositories per account, with concurrent adds for the last slot | pass (adds and uploads) | pass (201, 409, 409; 5 total) |
+| `INVITE_CODES` accounts keep working, also with `INVITE_CODES` empty | pass | — |
+| Private GitHub reports not configured, and the UI labels it "Not enabled" | UI render test | pass |
+
+**The repository-limit race was real:** with the old count-then-insert code, the same tests reached 7 repositories (three concurrent adds) and 6 (two concurrent uploads). The tests reproduce D1's network latency by answering the count after a delay. With the limit inside the INSERT, both stop at 5.
+
+**Browser pass (local):** an invitation was redeemed in the UI. The key screen kept Continue disabled until "I have saved…" was ticked. The new account showed the welcome card, "0 of 5 repositories used" and the "Not enabled" private-GitHub card, and did not show the other local account's repository. Re-entering the invitation showed "already been used", and the key signed in again. Pages fit at 375 px with no horizontal scroll, and keyboard focus showed a 2 px ring.

@@ -80,6 +80,8 @@ These numbers come from the isolated evaluation deployment running the productio
 | Private repositories listed for choosing | 300 (from up to 3 GitHub App installations) | The list says when it is truncated |
 | Private access re-check | at most every 10 minutes per repository, for content | One GitHub API call; reads are refused if access cannot be confirmed for an hour |
 | Lost access | 7 days | Then the repository is deleted by the cron trigger |
+| Sign-in and invitation attempts | 10 per 15 minutes per client address, shared | 429; codes are 128-bit and keys 160-bit, so guessing is not feasible anyway ([ADR 0005](adr/0005-invitations-and-accounts.md)) |
+| Invitations | single use, expire after 1–30 days (default 7) | Issued only by an administrator through Wrangler; an invited account's session costs one D1 row read per request |
 | Requests per account | Ask 6 a minute and 100 a day; search, symbols and importers 60 a minute; file lists, files and architecture 120 a minute; 20 indexing starts a day | 429 with a fixed message; the full table is in the [README](../README.md#free-plan-limits-and-quota-behaviour) |
 
 **Why private repositories fit the Free plan ([ADR 0004](adr/0004-private-github-repositories.md)):**

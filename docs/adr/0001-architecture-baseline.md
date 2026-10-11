@@ -99,9 +99,11 @@ Repository content is always untrusted data, never instructions.
 - An answer with no valid citation becomes an explicit *insufficient evidence* response.
 - If retrieval finds nothing relevant, the model is not called.
 
-### 7. Authentication (Pending owner decision)
+### 7. Authentication
 
-**Recommended: invite codes.** High-entropy invite codes stored hashed as Worker secrets, exchanged for a signed `HttpOnly; Secure; SameSite=Strict` session cookie.
+**Update (2026-10-11):** individual accounts from single-use invitations, each with a personal sign-in key, now sit alongside the original invite codes. See [ADR 0005](0005-invitations-and-accounts.md).
+
+**Original decision: invite codes.** High-entropy invite codes stored hashed as Worker secrets, exchanged for a signed `HttpOnly; Secure; SameSite=Strict` session cookie.
 - It runs entirely in the Worker using WebCrypto, with no external service, so it is zero-cost.
 - Ownership is enforced server-side on every query.
 

@@ -12,7 +12,35 @@ It never modifies, commits to or executes the repositories and archives it reads
 
 Every statement links to its lines. Evaluation: [docs/eval-results.md](docs/eval-results.md).
 
-**Private GitHub repositories** are implemented but **not enabled in production**: the GitHub App has not been registered there, and the connection has not yet been tested end to end against real GitHub. See [Private GitHub repositories](#private-github-repositories).
+**Private GitHub repositories** are implemented but **on hold and not enabled in production**: the GitHub App has not been registered there, and the connection has not been tested end to end against real GitHub. The app labels the option "Not enabled". See [Private GitHub repositories](#private-github-repositories).
+
+**Access is invite-only.** Each person gets their own private account from a single-use invitation. See [Accounts and invitations](#accounts-and-invitations).
+
+## Accounts and invitations
+
+Design and threat model: [ADR 0005](docs/adr/0005-invitations-and-accounts.md).
+
+**How a new person signs up:**
+1. They receive an invitation code (`rmi_…`) privately from an administrator. It works once and expires (7 days by default).
+2. They open RepoMind, paste it into **Invitation code or sign-in key**, and choose **Continue**.
+3. RepoMind creates their own empty account and shows a personal **sign-in key** (`rmk_…`) once, with Copy and Download buttons. They confirm they saved it.
+4. Next time, they paste the sign-in key into the same field. Sessions last 7 days.
+
+The invitation grants access to RepoMind, not to anyone else's repositories. Each account sees only its own repositories, up to 5 ("3 of 5 repositories used"). No name or email address is collected.
+
+**How to invite someone (administrator):** an administrator is anyone logged in to the Cloudflare account (`npx wrangler login`); the Worker has no admin page. From this folder:
+
+```bash
+npm run admin -- invite --remote --label "for Sam"
+```
+
+- **Issuing.** The command prints the code once and stores only its SHA-256 digest. Send the code privately (a direct message, not a public channel), together with the printed steps. `--days 1..30` sets the expiry; `--count N` issues several.
+- **Withdrawing.** `npm run admin -- invitations --remote` lists invitations and their status (open, used, expired, revoked); `npm run admin -- revoke <invitation-id> --remote` withdraws an unused one.
+- **Accounts.** `npm run admin -- accounts --remote` lists accounts with their repository counts and last sign-in.
+- **Blocking.** `npm run admin -- disable <account-id> --remote` signs an account out everywhere and blocks its key; its repositories are kept. `enable` reverses it.
+- **Lost keys.** `npm run admin -- recover <account-id> --remote` prints a single-use recovery code. Entering it replaces the person's sign-in key, signs out their other sessions and keeps their repositories.
+
+**Original invite codes:** codes in the `INVITE_CODES` secret still sign in to their existing (shared) accounts. New people should get invitations instead; `INVITE_CODES` may now be empty.
 
 ## Sources and what is analysed
 
@@ -45,7 +73,7 @@ RepoMind runs on the Cloudflare Workers **Free** plan only. When a quota runs ou
 | Questions | 6 a minute and 100 a day per account |
 | Search, symbols and importers | 60 a minute per account |
 | File lists, files and architecture | 120 a minute per account |
-| Sign-in attempts | 10 per 15 minutes per network address |
+| Sign-in and invitation attempts | 10 per 15 minutes per network address, shared |
 | AI budget | 8,500 of the 10,000 free Workers AI Neurons a day, shared by every account |
 
 **When today's AI budget is used up:** Ask shows the most relevant passages without an AI answer, and semantic indexing pauses; both resume after 00:00 UTC. Keyword search, files, symbols and the architecture overview keep working.
@@ -127,7 +155,10 @@ Until all four secrets are set, the private-repository section stays hidden.
 - **ZIP uploads** need the tab open while files upload. Encrypted, ZIP64 and split archives are refused.
 - **Very large GitHub repositories** whose file list GitHub truncates are refused; upload a ZIP of the part you need instead.
 - **Revoked GitHub access** is noticed within 10 minutes (there is no webhook).
-- **Access is by invite code**; there is no public sign-up. Sessions last 7 days.
+- **Access is by invitation**; there is no public sign-up. Sessions last 7 days.
+- **A lost sign-in key** cannot be shown again; an administrator issues a recovery code.
+- **No self-service account deletion yet.** People can delete their repositories; an administrator can disable an account.
+- **Signing out clears the browser's session cookie only.** Disabling the account or replacing its key ends every session at once.
 
 ## Troubleshooting
 
@@ -141,14 +172,22 @@ Until all four secrets are set, the private-repository section stays hidden.
 | **Content hidden** | GitHub no longer confirms your access. Connect GitHub again, or reinstall the app on the repository. Without access for 7 days, the index is deleted. |
 | "You have started 20 indexing jobs today" or "today's question limit" | Wait until 00:00 UTC. |
 | An error ending in "(reference …)" | A server error. Try again; if it persists, report it with the reference. |
-| Back on the sign-in screen | Your session expired or you signed out. Sign in again with your invite code. |
+| Back on the sign-in screen | Your session expired or you signed out. Paste your sign-in key again. |
+| "This invitation has already been used" | If it created your account, sign in with the sign-in key you saved. Otherwise ask for a new invitation. |
+| "This invitation has expired" or "was withdrawn" | Ask the person who sent it for a new one. |
+| Lost your sign-in key | Ask an administrator for a recovery code (`npm run admin -- recover <account-id> --remote`). Your repositories are kept. |
+| "Too many sign-in attempts" | Wait 15 minutes; sign-in and invitation attempts share a limit of 10 per address. |
 
 ## Release smoke test (manual)
 
 Run by the owner against production in a normal browser with their own invite code. Automation never signs in to production. A small public repository costs one of the day's 20 indexing jobs and a few dozen AI Neurons.
 
 1. **Health and protection.** `GET /api/health` returns `{"status":"ok","service":"repomind"}`. Signed out, `GET /api/repos` returns 401 and `POST /api/repos` from another origin is refused.
-2. **Sign-in.** A wrong invite code shows an error; the right one opens Repositories. A new account sees "How RepoMind works" and the three sources.
+2. **Sign-up and sign-in.**
+   - Issue a test invitation (`npm run admin -- invite --remote --days 1 --label smoke-test`) and redeem it in a private browser window. The sign-in key appears once, Continue stays disabled until "I have saved…" is ticked, and the new account shows "Welcome to RepoMind" and "0 of 5 repositories used".
+   - Sign out, then sign in with the key. Entering the invitation again says it has already been used.
+   - In a normal window, your own account does not list the test account's repositories, and vice versa.
+   - Afterwards, disable the test account (`npm run admin -- accounts --remote`, then `disable`). Its open session returns to the sign-in screen.
 3. **Public GitHub.** Add a small repository (for example `github.com/expressjs/cors`). Progress shows real file counts; the badge moves through Indexing → Search ready → Ready.
 4. **Explore.** Open a file; at phone width the code scrolls inside its box. Search a word and an identifier; a definition opens at its line. The architecture overview loads, and each statement links to lines. Ctrl/Cmd-click on a file link opens a new tab.
 5. **Ask.** A question answered by the code gives a cited answer whose citations open the right lines. A question about something absent says the evidence isn't there. A question telling RepoMind to ignore its instructions is not obeyed.
@@ -190,6 +229,8 @@ See [ADR 0001](docs/adr/0001-architecture-baseline.md) for the decisions and [do
 | `npm run eval:scale` | Larger-repository evaluation on Cloudflare against the isolated eval deployment (`wrangler.eval-remote.jsonc`): admission, indexing time, search, answers with checked citations, UI states, AI usage and D1 rows |
 | `npm run eval:code` | Code-intelligence evaluation (definitions, usages, imports, importers, dependencies, overview, plus a random held-out sample) on seven pinned repositories, in process, no AI quota; `eval/code-intel-remote.ts` repeats it on the isolated Cloudflare deployment |
 | `eval/github-remote.ts` | Private-repository plumbing on the isolated Cloudflare deployment with placeholder app settings: authorize URL, PKCE, cookie flags, state checks, GitHub's rejection of an unknown app, "connect first" answers; public GitHub and ZIP indexing on the same build |
+| `npm run admin -- <command>` | Invitations and accounts (administrator only, through Wrangler); see [Accounts and invitations](#accounts-and-invitations) |
+| `eval/accounts-remote.ts` | Multi-user onboarding on the isolated Cloudflare deployment: CLI-issued invitations, concurrent redemption, isolation, the repository limit under concurrent adds, disable, recovery and the sign-in rate limit |
 | `eval/upload-remote.ts` | ZIP uploads on the isolated Cloudflare deployment: archives built from pinned repositories, uploaded like the browser does, checked for paths, lines, search, symbols, duplicates, cancellation and deletion |
 | `npm run deploy` | Build and deploy. Requires Cloudflare login; deploy only when authorized. |
 
@@ -211,7 +252,7 @@ public/     Static files, including _headers (security headers for assets)
 ## Secrets
 
 Never commit secrets:
-- **Production:** use `wrangler secret put <NAME>`. This includes `SESSION_SECRET`, `INVITE_CODES` and, for private repositories, `GITHUB_APP_CLIENT_SECRET` and `GITHUB_TOKEN_KEY`.
+- **Production:** use `wrangler secret put <NAME>`. This includes `SESSION_SECRET`, `INVITE_CODES` (optional since invitations; see above) and, for private repositories, `GITHUB_APP_CLIENT_SECRET` and `GITHUB_TOKEN_KEY`.
 - **Local development:** use `.dev.vars`, which is git-ignored.
 - **Rotating `GITHUB_TOKEN_KEY`** makes stored GitHub tokens unreadable; users then connect again.
 
